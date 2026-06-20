@@ -854,7 +854,7 @@ def html_metric(label: str, value: str, sub: str = "") -> str:
     </div>"""
 
 
-def html_feat_bar(label: str, score: float, desc: str, color: str = "#00f5d4") -> str:
+def html_feat_bar(label: str, score: float, desc: str, color: str = "#1565c0") -> str:
     pct = int(score * 100)
     return f"""
     <div class="feat-row">
@@ -864,32 +864,32 @@ def html_feat_bar(label: str, score: float, desc: str, color: str = "#00f5d4") -
       </div>
       <span class="feat-val">{pct}%</span>
     </div>
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
-                color:#5c7a9e;margin:-6px 0 10px 132px;">{desc}</div>"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;
+                color:#2d3748;margin:-6px 0 12px 142px;">{desc}</div>"""
 
 
 def html_forward_table(rows: list[dict], last_close: float) -> str:
     head = "<thead><tr>" + "".join(
-        f"<th>{col}</th>" for col in ["交易日","預估日期","演算法預估價","±幅度","型態觀測重點"]
+        f"<th>{col}</th>" for col in ["交易日", "預估日期", "演算法預估價", "±波動幅度", "型態觀測重點"]
     ) + "</tr></thead>"
 
     tbody = ""
     for r in rows:
-        p  = r["演算法預估價"]
-        hi = r["上限參考"]
-        lo = r["下限參考"]
+        p   = r["演算法預估價"]
+        hi  = r["上限參考"]
+        lo  = r["下限參考"]
         chg = (p - last_close) / last_close * 100
-        if chg > 0.5:   cls = "price-up"
+        if chg > 0.5:    cls = "price-up"
         elif chg < -0.5: cls = "price-down"
-        else:            cls = "price-flat"
+        else:             cls = "price-flat"
 
         band_str = f'+{hi-p:.2f} / -{p-lo:.2f}'
         tbody += f"""<tr>
-          <td>{r['交易日']}</td>
-          <td>{r['預估日期']}</td>
-          <td class="{cls}">{p:.2f} ({chg:+.1f}%)</td>
-          <td style="color:#5c7a9e;font-size:11px;">{band_str}</td>
-          <td style="color:#4a6fa5;font-size:13px;">{r['型態觀測重點']}</td>
+          <td style="color:#1a2b3c;font-weight:600;">{r['交易日']}</td>
+          <td style="color:#4a6fa5;">{r['預估日期']}</td>
+          <td class="{cls}" style="font-size:15px;">{p:.2f} ({chg:+.1f}%)</td>
+          <td style="color:#7a9bbf;font-size:13px;">{band_str}</td>
+          <td style="color:#2d3748;font-size:13px;line-height:1.5;">{r['型態觀測重點']}</td>
         </tr>"""
 
     return f'<table class="fwd-table">{head}<tbody>{tbody}</tbody></table>'
@@ -982,7 +982,7 @@ def run_batch_scan(tickers: list[str], period: str,
             progress_bar.progress(completed / total)
             status_text.markdown(
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;'
-                f'font-size:12px;color:#5c7a9e;">'
+                f'font-size:14px;color:#1a2b3c;">'
                 f'掃描中 {completed}/{total} ── {future_map[fut]}</span>',
                 unsafe_allow_html=True
             )
@@ -1001,52 +1001,91 @@ def run_batch_scan(tickers: list[str], period: str,
 
 def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
     """
-    將批量掃描結果渲染為可視化 HTML 表格。
-    只顯示勝率 >= min_winrate 的列。
+    批量掃描結果表格 ── 淺色系易讀版本。
+
+    顏色設計原則:
+      - 代號:  深藍 #1565c0 (強調,可點擊感)
+      - 股價:  深黑 #1a2b3c (最重要數字,最深)
+      - 勝率條: 深藍底 #1e3a5f + 顏色填充 (在白底上清晰)
+      - 分類:  色塊背景 (綠/橘/紅底+白字,一眼辨識)
+      - R_cycle: 橘色 #c05621 (警示色)
+      - 均線/KD: 深灰 #2d3748 (次要但可讀)
     """
     filtered = [r for r in rows if r["勝率"] >= min_winrate]
     if not filtered:
-        return '<div style="color:#5c7a9e;font-family:\'IBM Plex Mono\',monospace;padding:20px;">無符合條件的標的</div>'
+        return ('<div style="color:#4a6fa5;font-family:\'Noto Sans TC\',sans-serif;'
+                'padding:24px;font-size:15px;">⚠️ 無符合條件的標的，請降低勝率門檻或調整清單</div>')
 
-    cat_color = {"top": "#00f5d4", "mid": "#ffd166", "warn": "#ff4d6d"}
+    # 分類:色塊背景+白字
+    cat_badge = {
+        "top":  ('<span style="background:#0a7c59;color:#fff;padding:3px 10px;'
+                 'border-radius:5px;font-size:13px;font-weight:700;">🚀 頂級</span>'),
+        "mid":  ('<span style="background:#d97706;color:#fff;padding:3px 10px;'
+                 'border-radius:5px;font-size:13px;font-weight:700;">⏳ 蓄勢</span>'),
+        "warn": ('<span style="background:#c0392b;color:#fff;padding:3px 10px;'
+                 'border-radius:5px;font-size:13px;font-weight:700;">🛑 警戒</span>'),
+    }
+    # 勝率橫條顏色
+    bar_color = {"top": "#0a7c59", "mid": "#d97706", "warn": "#c0392b"}
 
     head = """
-    <table class="fwd-table" style="font-size:12px;">
+    <table class="fwd-table" style="font-size:14px;width:100%;">
       <thead>
         <tr>
-          <th>#</th><th>代號</th><th>收盤</th>
-          <th>勝率</th><th>分類</th>
-          <th>R_cycle</th><th>T_median</th><th>D_current</th>
-          <th>均線型態</th><th>KD狀態</th>
+          <th style="width:36px;">#</th>
+          <th style="width:110px;">代號</th>
+          <th style="width:80px;">收盤價</th>
+          <th style="width:160px;">波段勝率</th>
+          <th style="width:80px;">分類</th>
+          <th style="width:80px;">R_cycle</th>
+          <th style="width:80px;">修正基準</th>
+          <th style="width:80px;">拉回天數</th>
+          <th>均線型態</th>
+          <th>KD 狀態</th>
         </tr>
       </thead><tbody>"""
 
     body = ""
     for i, r in enumerate(filtered, 1):
-        cat   = r["category"]
-        color = cat_color.get(cat, "#ffffff")
-        wr    = r["勝率"]
+        cat  = r["category"]
+        wr   = r["勝率"]
+        bc   = bar_color.get(cat, "#1565c0")
+        badge = cat_badge.get(cat, r["分類"])
 
-        # 勝率橫條(迷你版)
-        bar = (f'<div style="display:flex;align-items:center;gap:6px;">'
-               f'<div style="width:60px;background:#1e2d45;border-radius:4px;height:6px;">'
-               f'<div style="width:{wr}%;height:6px;border-radius:4px;background:{color};"></div>'
-               f'</div>'
-               f'<span style="color:{color};font-weight:600;">{wr:.1f}%</span>'
+        # 斑馬紋底色
+        row_bg = "background:#f7fafd;" if i % 2 == 0 else "background:#ffffff;"
+
+        # 勝率橫條:深藍底色讓進度條在白底上清晰可見
+        bar = (f'<div style="display:flex;align-items:center;gap:8px;">'
+               f'<div style="width:70px;background:#c8d8e8;border-radius:4px;'
+               f'height:10px;flex-shrink:0;overflow:hidden;">'
+               f'<div style="width:{min(wr,100):.0f}%;height:10px;border-radius:4px;'
+               f'background:{bc};"></div></div>'
+               f'<span style="color:{bc};font-weight:700;font-size:15px;'
+               f'font-family:\'IBM Plex Mono\',monospace;">{wr:.1f}%</span>'
                f'</div>')
 
+        # R_cycle 顏色:>1.0 綠,0.6~1.0 橘,<0.6 紅
+        rc = r["R_cycle"]
+        rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+
         body += f"""
-        <tr>
-          <td style="color:#7a9bbf;">{i}</td>
-          <td style="color:#00f5d4;font-weight:600;">{r['代號']}</td>
-          <td style="color:#e7edf6;">{r['收盤價']}</td>
+        <tr style="{row_bg}">
+          <td style="color:#7a9bbf;font-size:13px;text-align:center;">{i}</td>
+          <td style="color:#1565c0;font-weight:700;font-size:15px;
+                     font-family:'IBM Plex Mono',monospace;">{r['代號']}</td>
+          <td style="color:#1a2b3c;font-weight:700;font-size:15px;
+                     font-family:'IBM Plex Mono',monospace;">{r['收盤價']}</td>
           <td>{bar}</td>
-          <td><span style="color:{color};font-weight:600;font-size:11px;">{r['分類']}</span></td>
-          <td style="color:#d97706;">{r['R_cycle']:.3f}</td>
-          <td style="color:#4a6fa5;">{r['T_median']:.0f}天</td>
-          <td style="color:#4a6fa5;">{r['D_current']}天</td>
-          <td style="color:#8aa3c2;font-size:11px;">{r['均線型態'][:20]}</td>
-          <td style="color:#8aa3c2;font-size:11px;">{r['KD狀態'][:20]}</td>
+          <td>{badge}</td>
+          <td style="color:{rc_color};font-weight:600;font-size:14px;
+                     font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+          <td style="color:#1a2b3c;font-size:14px;
+                     font-family:'IBM Plex Mono',monospace;">{r['T_median']:.0f} 天</td>
+          <td style="color:#1a2b3c;font-size:14px;
+                     font-family:'IBM Plex Mono',monospace;">{r['D_current']} 天</td>
+          <td style="color:#2d3748;font-size:13px;">{r['均線型態'][:22]}</td>
+          <td style="color:#2d3748;font-size:13px;">{r['KD狀態'][:22]}</td>
         </tr>"""
 
     return head + body + "</tbody></table>"
@@ -1060,7 +1099,7 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("""
         <div style="font-family:'IBM Plex Mono',monospace;margin-bottom:18px;">
-          <div style="font-size:18px;font-weight:700;color:#00f5d4;letter-spacing:1px;">🧬 波浪 DNA</div>
+          <div style="font-size:18px;font-weight:700;color:#1565c0;letter-spacing:1px;">🧬 波浪 DNA</div>
           <div style="font-size:10px;color:#7a9bbf;letter-spacing:2px;margin-top:4px;">
             DYNAMIC WAVE CYCLE DNA
           </div>
@@ -1337,7 +1376,7 @@ def main():
             st.markdown("""
             <div class="dna-card" style="text-align:center;padding:40px;">
               <div style="font-size:36px;margin-bottom:12px;">📡</div>
-              <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#5c7a9e;">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#4a6fa5;">
                 設定掃描參數後,按下「開始批量掃描」
               </div>
               <div style="font-size:12px;color:#7a9bbf;margin-top:10px;line-height:1.8;">
@@ -1370,11 +1409,12 @@ def main():
 
         # ── 掃描 UI ───────────────────────────────────────────────────
         st.markdown(f"""
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#5c7a9e;
-                    margin-bottom:12px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#1a2b3c;
+                    margin-bottom:12px;background:#eaf2fb;padding:10px 16px;border-radius:8px;
+                    border-left:4px solid #1565c0;">
           📡 開始掃描 <b style="color:#1565c0;">{total}</b> 檔標的
           (自選 {len(custom_tickers)} + 熱門 {total - len(custom_tickers)})
-          ── 勝率門檻 ≥ <b style="color:#d97706;">{min_wr}%</b>
+          ── 勝率門檻 ≥ <b style="color:#0a7c59;">{min_wr}%</b>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1445,7 +1485,7 @@ def main():
 
                     st.markdown(f"""
                     <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;
-                                color:#5c7a9e;margin:12px 0;">
+                                color:#4a6fa5;margin:12px 0;">
                       ▶ 展開分析: <b style="color:#1565c0;">{used_sel}</b> ──
                       {len(df_sel)} 個交易日
                       ({df_sel.index[0].strftime('%Y-%m-%d')} ~ {df_sel.index[-1].strftime('%Y-%m-%d')})
@@ -1495,7 +1535,7 @@ def main():
 
         st.markdown(f"""
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
-                    margin-top:18px;text-align:center;">
+                    margin-top:18px;text-align:center;color:#4a6fa5;">
           ⚠️ 本系統僅供技術型態研究,不構成任何投資建議。數據來源: Yahoo Finance。
           掃描完成時間: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
         </div>
@@ -1541,7 +1581,7 @@ def main():
     st.markdown(f"""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4a6fa5;
                 margin-bottom:16px;">
-      ▶ 已分析: <b style="color:#1565c0;font-weight:700;">{used_ticker}</b> ──
+      ▶ 已分析: <b style="color:#1565c0;font-weight:700;font-size:16px;">{used_ticker}</b> ──
       {len(df)} 個交易日 ({df.index[0].strftime('%Y-%m-%d')} ~ {df.index[-1].strftime('%Y-%m-%d')})
     </div>
     """, unsafe_allow_html=True)
@@ -1564,7 +1604,7 @@ def main():
 
     st.markdown(f"""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
-                margin-top:18px;text-align:center;">
+                margin-top:18px;text-align:center;color:#4a6fa5;">
       ⚠️ 本系統僅供技術型態研究,不構成任何投資建議。數據來源: Yahoo Finance (yfinance)。
       最後更新: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
     </div>
