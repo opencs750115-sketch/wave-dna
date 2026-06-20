@@ -1,0 +1,1575 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+  動態歷史波浪週期 DNA 匹配系統 (Dynamic Wave Cycle DNA Matching)
+  app.py  ── Streamlit 主程式
+================================================================================
+執行方式:
+    streamlit run app.py
+
+需要套件 (requirements.txt):
+    streamlit>=1.35
+    yfinance>=1.4.0
+    curl_cffi>=0.7.0
+    pandas>=2.0
+    numpy>=1.24
+    scipy>=1.11
+================================================================================
+"""
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from scipy.signal import find_peaks
+import datetime
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  全域設定
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="波浪 DNA 匹配系統",
+    page_icon="🧬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  自訂 CSS ── 淺藍色系專業看板風格
+#  色票:
+#    --bg       : #f0f4f8  (淺灰藍主背景)
+#    --panel    : #ffffff  (卡片白底)
+#    --sidebar  : #e8eef5  (側邊欄淺藍灰)
+#    --border   : #c8d8e8  (邊框淺藍)
+#    --text     : #1a2b3c  (深藍主文字)
+#    --muted    : #4a6fa5  (中藍輔助文字)
+#    --bull     : #0a7c59  (多頭深綠)
+#    --bear     : #c0392b  (空頭深紅)
+#    --accent   : #1565c0  (強調藍)
+#    --mid      : #d97706  (中繼橘黃)
+#  字體: Noto Sans TC(中文) + IBM Plex Mono(數字)
+# ─────────────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/* ── 根樣式 ── */
+html, body, [data-testid="stAppViewContainer"] {
+    background: #f0f4f8 !important;
+    font-family: 'Noto Sans TC', sans-serif;
+    color: #1a2b3c;
+    font-size: 15px;
+}
+[data-testid="stSidebar"] {
+    background: #e2eaf3 !important;
+    border-right: 2px solid #b8cce0;
+}
+[data-testid="stSidebar"] * { color: #1a2b3c !important; }
+header[data-testid="stHeader"] { background: #dce8f0 !important; border-bottom: 1px solid #b8cce0; }
+
+/* ── Streamlit 原生元件文字覆蓋 ── */
+p, label, div, span { color: #1a2b3c; }
+.stRadio label, .stCheckbox label, .stSelectbox label,
+.stSlider label, .stTextInput label, .stTextArea label { color: #1a2b3c !important; font-size: 15px !important; }
+.stRadio div[role="radiogroup"] label { font-size: 15px !important; color: #1a2b3c !important; }
+.stButton button { font-size: 15px !important; font-weight: 600 !important; border-radius: 8px !important; }
+.stButton button[kind="primary"] {
+    background: #1565c0 !important; color: white !important; border: none !important;
+}
+.stSelectbox div[data-baseweb] { background: #ffffff !important; color: #1a2b3c !important; border-color: #b8cce0 !important; }
+.stTextInput input, .stTextArea textarea {
+    background: #ffffff !important; color: #1a2b3c !important;
+    border: 1.5px solid #b8cce0 !important; border-radius: 8px !important;
+    font-size: 15px !important;
+}
+.stExpander { border: 1px solid #b8cce0 !important; border-radius: 8px !important; background: #ffffff; }
+[data-testid="stExpander"] summary { color: #1a2b3c !important; font-size: 15px !important; }
+
+/* ── 卡片 ── */
+.dna-card {
+    background: #ffffff;
+    border: 1.5px solid #b8cce0;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(21,101,192,0.07);
+}
+.dna-card h3 {
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #4a6fa5;
+    margin: 0 0 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+}
+.dna-card .val {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 30px;
+    font-weight: 700;
+    color: #1a2b3c;
+    line-height: 1.1;
+}
+.dna-card .sub {
+    font-size: 13px;
+    color: #4a6fa5;
+    margin-top: 5px;
+    font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ── 分類標籤 ── */
+.label-top  { background: #0a7c59; color: #ffffff; }
+.label-mid  { background: #d97706; color: #ffffff; }
+.label-warn { background: #c0392b; color: #ffffff; }
+.dna-label {
+    display: inline-block;
+    font-family: 'Noto Sans TC', sans-serif;
+    font-weight: 700;
+    font-size: 18px;
+    padding: 10px 26px;
+    border-radius: 8px;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+/* ── 勝率橫條 ── */
+.bar-wrap {
+    background: #d0dde8;
+    border-radius: 999px;
+    height: 14px;
+    overflow: hidden;
+    margin-top: 10px;
+}
+.bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width .8s ease;
+}
+
+/* ── 表格 ── */
+.fwd-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    background: #ffffff;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(21,101,192,0.07);
+}
+.fwd-table th {
+    background: #1565c0;
+    color: #ffffff;
+    padding: 12px 14px;
+    text-align: left;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+.fwd-table td {
+    padding: 11px 14px;
+    border-bottom: 1px solid #dce8f0;
+    color: #1a2b3c;
+    font-size: 14px;
+}
+.fwd-table tr:last-child td { border-bottom: none; }
+.fwd-table tr:hover td { background: #eaf2fb; }
+.price-up   { color: #0a7c59; font-weight: 600; }
+.price-down { color: #c0392b; font-weight: 600; }
+.price-flat { color: #d97706; font-weight: 600; }
+
+/* ── 分隔標題 ── */
+.section-title {
+    font-size: 13px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #1565c0;
+    font-weight: 700;
+    margin: 24px 0 14px;
+    font-family: 'Noto Sans TC', sans-serif;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.section-title::after {
+    content: '';
+    flex: 1;
+    height: 2px;
+    background: linear-gradient(90deg, #1565c0, #b8cce0);
+    border-radius: 2px;
+}
+
+/* ── 特徵分數條 ── */
+.feat-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+}
+.feat-label { color: #1a2b3c; width: 130px; flex-shrink: 0; font-weight: 500; }
+.feat-bar-wrap { flex: 1; background: #d0dde8; border-radius: 999px; height: 10px; }
+.feat-bar-fill { height: 10px; border-radius: 999px; }
+.feat-val { color: #1565c0; width: 44px; text-align: right; font-weight: 600; }
+
+/* ── Streamlit metric ── */
+[data-testid="metric-container"] {
+    background: #ffffff !important;
+    border: 1.5px solid #b8cce0 !important;
+    border-radius: 10px !important;
+    padding: 16px 18px !important;
+    box-shadow: 0 2px 6px rgba(21,101,192,0.07) !important;
+}
+[data-testid="stMetricLabel"] p {
+    color: #4a6fa5 !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+}
+[data-testid="stMetricValue"] {
+    color: #1a2b3c !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 24px !important;
+    font-weight: 700 !important;
+}
+[data-testid="stMetricDelta"] { font-size: 13px !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  工具函式群
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_data(ticker: str, period: str = "2y") -> pd.DataFrame | None:
+    """
+    以 yfinance 下載個股過去 N 年日線資料。支援台股(自動補 .TW / .TWO)與美股。
+
+    ★ 修正 B: 關閉 auto_adjust=True 的自動還原
+    ─────────────────────────────────────────────────────────
+    台股配息(如南茂 8150)在 auto_adjust=True 時,yfinance 會把歷史所有
+    收盤價往下調整(反向加回每次除息金額),導致過去的波峰被壓低、
+    波谷被深挖,計算出的 T_median 嚴重失真(8 天而非實際的中線修正週期)。
+
+    修正方式:
+      - 改用 auto_adjust=False,取 Open/High/Low/Close/Volume 原始未還原資料,
+        波峰波谷識別 & D_current 計算 & 前瞻路徑 均使用此「原始價格空間」。
+      - 「Adj Close」欄位(若存在)僅作為計算「長期乖離率/均線趨勢」的補充,
+        不影響 find_peaks 的輸入。
+      - 美股通常無大幅度除息影響,此設定不影響美股結果。
+    ─────────────────────────────────────────────────────────
+    快取 10 分鐘,避免頻繁打 Yahoo Finance。
+    """
+    candidates = [ticker.upper()]
+    t = ticker.strip().upper()
+    if "." not in t and t.isdigit():
+        candidates = [f"{t}.TW", f"{t}.TWO", t]
+
+    for cand in candidates:
+        try:
+            # ★ auto_adjust=False: 保留原始未還原的 OHLCV 收盤價,
+            #   讓波峰波谷識別與看盤軟體顯示的K線一致。
+            df = yf.download(cand, period=period, interval="1d",
+                             auto_adjust=False, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            # yfinance auto_adjust=False 時同時包含 Adj Close 欄,
+            # 用原始 Close 作為計算主軸
+            if "Close" not in df.columns and "Adj Close" in df.columns:
+                df = df.rename(columns={"Adj Close": "Close"})
+
+            df = df.dropna(subset=["Close"])
+            if len(df) >= 60:
+                df.index = pd.to_datetime(df.index)
+                return df, cand
+        except Exception:
+            continue
+    return None, ticker
+
+
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    計算所有技術指標,全部附加到 df 上:
+      MA5 / MA10 / MA20 / MA60    均線
+      K9 / D9                     隨機指標(9日RSV,1/3平滑)
+      ATR14                       平均真實波動幅度(14日)
+      VolMA5                      5日均量
+    """
+    df = df.copy()
+
+    for n in [5, 10, 20, 60]:
+        df[f"MA{n}"] = df["Close"].rolling(n).mean()
+
+    # KD: 台股標準 9日RSV + 1/3 指數平滑
+    low9  = df["Low"].rolling(9).min()
+    high9 = df["High"].rolling(9).max()
+    denom = (high9 - low9).replace(0, np.nan)
+    rsv   = ((df["Close"] - low9) / denom * 100).fillna(50)
+    df["K9"] = rsv.ewm(alpha=1/3, adjust=False).mean()
+    df["D9"] = df["K9"].ewm(alpha=1/3, adjust=False).mean()
+
+    # ATR14
+    prev_close = df["Close"].shift(1)
+    tr = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - prev_close).abs(),
+        (df["Low"]  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df["ATR14"] = tr.rolling(14).mean()
+
+    # 成交量均量
+    df["VolMA5"] = df["Volume"].rolling(5).mean()
+
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  模組 A: 波浪 DNA 識別引擎
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_wave_dna(df: pd.DataFrame) -> dict:
+    """
+    從過去兩年 (最多 500 根K棒) 的收盤價中進行「雙層波段識別」:
+
+      ─ 大波 (Big Wave):  prominence = close 全段標準差 × 20%
+                           distance   = 動態(依 ATR% 決定 12~25 天)
+                           → 識別「中期趨勢波峰 / 修正低點」,計算 T_median
+
+      ─ 小波 (Small Wave): prominence = close 全段標準差 × 8%
+                           distance   = max(5, big_distance//2)
+                           → 在大波峰之後,找「最近一個短期修正低點」
+                           → 若此低點已過且股價已回升,切換至「上升段」模式
+
+    ★ 修正 B+C 整合說明:
+      - auto_adjust=False 解決除息還原造成的價格軸錯位問題。
+      - prom = std×0.20 (全段相對標準差) 取代固定 ATR 倍數,
+        讓「一路大漲的強勢股」(如南茂)也能正確識別近期短波段。
+      - ATR% 決定 distance,解決「漣漪型」股票(如中華電)
+        T_median 被嚴重低估的問題。
+
+    回傳:
+      peaks / troughs    : 大波索引陣列
+      small_troughs      : 小波谷索引陣列(供「修正低點」判斷使用)
+      corrections        : 各修正波段天數 list (大波)
+      T_mean / T_median / T_std
+      D_current          : 自最近大波峰至今天數
+      correction_end_idx : 最近一次「確認結束修正的小波谷」索引(-1 表示尚未出現)
+      days_since_trough  : 自修正低點至今的天數(已進入反彈段則 > 0)
+      last_peak_date / last_peak_price
+      R_cycle
+      atr_pct / distance_used
+    """
+    close = df["Close"].values.astype(float)
+    high  = df["High"].values.astype(float)
+    low   = df["Low"].values.astype(float)
+    n     = len(close)
+
+    # ── ATR 日均波動率 (用於 distance 決策) ──────────────────────────
+    prev = close[:-1]
+    tr_arr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(np.abs(high[1:] - prev), np.abs(low[1:] - prev))
+    )
+    atr14_val  = float(np.mean(tr_arr[-14:])) if len(tr_arr) >= 14 else float(np.std(close) * 0.5)
+    mean_price = float(np.mean(close[-60:])) if n >= 60 else float(np.mean(close))
+    atr_pct    = atr14_val / mean_price * 100
+
+    # ── 動態 distance (中期波段最小間距) ────────────────────────────
+    if atr_pct < 1.0:   dist = 25
+    elif atr_pct < 2.0: dist = 20
+    elif atr_pct < 3.5: dist = 15
+    else:               dist = 12
+
+    # ── 大波 prominence = 全段 std × 20% (自適應相對強度) ───────────
+    # 對強勢連漲股(std 很大),門檻跟著放大只識別大波段;
+    # 對牛皮股,門檻自動縮小,能識別出日常小波動。
+    prom_big   = float(np.std(close) * 0.20)
+    prom_small = float(np.std(close) * 0.08)
+    dist_small = max(5, dist // 2)
+
+    # ── 大波峰 / 大波谷 ─────────────────────────────────────────────
+    peaks,   _ = find_peaks( close, distance=dist,       prominence=prom_big)
+    troughs, _ = find_peaks(-close, distance=dist,       prominence=prom_big)
+    # ── 小波谷 (短期修正低點) ───────────────────────────────────────
+    small_tr, _ = find_peaks(-close, distance=dist_small, prominence=prom_small)
+
+    # 若大波樣本太少,放寬重跑
+    if len(peaks) < 3 or len(troughs) < 3:
+        prom_loose = float(np.std(close) * 0.10)
+        peaks,   _ = find_peaks( close, distance=max(dist-4,8), prominence=prom_loose)
+        troughs, _ = find_peaks(-close, distance=max(dist-4,8), prominence=prom_loose)
+
+    # ── 計算「大波」修正波段天數 ────────────────────────────────────
+    corrections = []
+    for pk in peaks:
+        # 在此波峰之後找第一個「大波谷」
+        big_tr_after = troughs[troughs > pk]
+        if len(big_tr_after) > 0:
+            days = int(big_tr_after[0] - pk)
+            if days >= 5:
+                corrections.append(days)
+        else:
+            # 無大波谷則找最近小波谷代替
+            small_tr_after = small_tr[small_tr > pk]
+            if len(small_tr_after) > 0:
+                days = int(small_tr_after[0] - pk)
+                if days >= 5:
+                    corrections.append(days)
+
+    if len(corrections) < 3:
+        for i in range(len(troughs) - 1):
+            d = int(troughs[i+1] - troughs[i])
+            if d >= 5:
+                corrections.append(d)
+
+    if not corrections:
+        T_median = float(dist)
+        T_mean   = float(dist)
+        T_std    = 0.0
+    else:
+        T_median = float(np.median(corrections))
+        T_mean   = float(np.mean(corrections))
+        T_std    = float(np.std(corrections)) if len(corrections) > 1 else 0.0
+        T_median = max(T_median, 5.0)
+
+    # ── 定位最近大波峰 ───────────────────────────────────────────────
+    valid_peaks = peaks[peaks < n]
+    if len(valid_peaks) == 0:
+        last_peak_idx   = 0
+        last_peak_price = float(close[0])
+    else:
+        last_peak_idx   = int(valid_peaks[-1])
+        last_peak_price = float(close[last_peak_idx])
+
+    D_current      = int(n - 1 - last_peak_idx)
+    last_peak_date = df.index[last_peak_idx].strftime("%Y-%m-%d")
+    R_cycle        = round(D_current / T_median, 3)
+
+    # ── 尋找「最近一個小波谷」(波峰後的修正低點) ────────────────────
+    # 如果存在,代表這次修正已有明確低點,可切換至「上漲段」分析模式
+    small_after_peak = small_tr[small_tr > last_peak_idx]
+    if len(small_after_peak) > 0:
+        correction_end_idx  = int(small_after_peak[0])
+        days_since_trough   = int(n - 1 - correction_end_idx)
+        correction_end_date = df.index[correction_end_idx].strftime("%Y-%m-%d")
+        correction_end_price= round(float(close[correction_end_idx]), 2)
+        actual_correction_days = int(correction_end_idx - last_peak_idx)
+    else:
+        correction_end_idx   = -1
+        days_since_trough    = -1
+        correction_end_date  = None
+        correction_end_price = None
+        actual_correction_days = None
+
+    return {
+        "peaks":                peaks,
+        "troughs":              troughs,
+        "small_troughs":        small_tr,
+        "corrections":          corrections,
+        "T_mean":               round(T_mean, 1),
+        "T_median":             round(T_median, 1),
+        "T_std":                round(T_std, 1),
+        "D_current":            D_current,
+        "last_peak_date":       last_peak_date,
+        "last_peak_price":      last_peak_price,
+        "R_cycle":              R_cycle,
+        "atr_pct":              round(atr_pct, 2),
+        "distance_used":        dist,
+        "correction_end_idx":   correction_end_idx,
+        "correction_end_date":  correction_end_date,
+        "correction_end_price": correction_end_price,
+        "actual_correction_days": actual_correction_days,
+        "days_since_trough":    days_since_trough,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  模組 C: 特徵向量 × 勝率引擎
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _score_r_cycle(r: float, days_since_trough: int = -1,
+                   actual_correction_days: int | None = None,
+                   T_median: float = 20.0) -> tuple[float, str]:
+    """
+    時間波得分 (0~1) + 文字說明。
+
+    ★ 新增「修正已確認結束」分支:
+       當 days_since_trough >= 0 (即大波峰後已出現小波谷且已反彈),
+       代表「修正段已結束,目前處於上漲段」。此時用「實際修正天數 vs T_median」
+       來評估修正的充分性(充分修正 → 得高分),再額外給「反彈天數加成」。
+    """
+    if days_since_trough >= 0 and actual_correction_days is not None:
+        # 用「實際修正天數」評估這次修正夠不夠充分
+        r_actual = actual_correction_days / T_median if T_median > 0 else 0
+        if r_actual >= 0.80:
+            base_score = 1.0
+            base_desc  = f"修正充分✅ 實際修正{actual_correction_days}天(>{T_median:.0f}天基準×80%)"
+        elif r_actual >= 0.50:
+            base_score = 0.80
+            base_desc  = f"修正尚可🔸 實際{actual_correction_days}天(完成基準{r_actual*100:.0f}%)"
+        else:
+            base_score = 0.50
+            base_desc  = f"修正偏短⚠️ 僅{actual_correction_days}天,可能仍有回測需求"
+
+        # 反彈天數加成:反彈剛起步(D+1~5)加最多 +0.1
+        if days_since_trough <= 3:
+            extra = 0.10
+            extra_desc = f",反彈起步第{days_since_trough}天⚡"
+        elif days_since_trough <= 8:
+            extra = 0.05
+            extra_desc = f",反彈第{days_since_trough}天"
+        else:
+            extra = 0.0
+            extra_desc = f",反彈已走{days_since_trough}天"
+
+        return min(base_score + extra, 1.0), base_desc + extra_desc
+
+    # 原始邏輯:修正尚在進行中,用 R_cycle 評估
+    if   0.95 <= r <= 1.25: return 1.0,  "飽和✅ 時空修正完全共振"
+    elif r > 1.25:           return 0.90, "超額⚡ 浮額極度乾淨"
+    elif r >= 0.80:          return 0.70, "接近🔸 距臨界點尚差一段"
+    elif r >= 0.60:          return 0.40, "進行中🔶 修正未過六成"
+    else:                    return 0.10, "嚴重欠帳🛑 修正嚴重不足"
+
+
+def _score_ma_pattern(
+    close: float, ma5: float, ma10: float, ma20: float, ma60: float,
+    k9: float, d9: float, ma_spread_pct: float,
+    vol_ratio: float = 1.0,
+) -> tuple[float, str]:
+    """
+    ★ 修正 A: 均線判定邏輯全面改寫
+    ─────────────────────────────────────────────────────────────────────
+    原本問題:嚴格要求「MA5 > MA10 > MA20 > MA60 全面多頭排列」才給高分。
+    這個條件在「底部第一根帶量長紅突破」當天完全不成立(因為均線還沒動),
+    導致南茂型的突破爆發被打成 0.25 偏空走勢。
+
+    新的判定優先順序(型態 0 為最高優先):
+
+      型態 0 ★ 帶量突破型態(最高分 0.95):
+            收盤 > MA5 & MA10 & MA20  且  vol_ratio >= 1.5
+            → 不管均線是否已排好,只要今天「穿越所有短中均線且量放大」就觸發。
+            這正是「底部首根帶量長紅」的本質。
+
+      型態 1 ✅ 極度壓縮型態(0.88):
+            四線在收盤價 3% 以內(略放寬從 2% 到 3%,台股除息後均線常略偏)
+            代表盤整完成、能量蓄積中。
+
+      型態 2 💡 跌深 KD 極底金叉(0.82):
+            收盤 < MA20 × 0.93  +  K9 < 25 & D9 < 25 & K9 > D9
+
+      型態 3 🚀 標準多頭排列(0.88):
+            MA5 > MA10 > MA20 且收盤 > MA5 × 1.005
+            (均線已全面確立,給分與帶量突破同級)
+
+      型態 4 📈 均線斜率向上整理(0.72):
+            收盤 > MA20,且 MA5 > MA20(短均已突破月線),但未完全排好
+            → 「整理後有望繼續」的型態
+
+      型態 5 ⏳ 月線附近盤整(0.50):
+            收盤介於 MA20 ± 4% 之間
+
+      型態 6 🔻 偏空走勢(0.25):
+            其餘
+    ─────────────────────────────────────────────────────────────────────
+    """
+    vals = [v for v in [ma5, ma10, ma20, ma60] if not np.isnan(v)]
+    if len(vals) < 2:
+        return 0.40, "均線資料不足(樣本太短)"
+
+    # 安全取值:MA60 可能是 NaN(初期資料不足)
+    ma60_valid = not np.isnan(ma60)
+
+    # ── 型態 0: 帶量穿越突破(最高優先)────────────────────────────────
+    # 收盤「同時站上 MA5、MA10、MA20」且當日量能放大 ≥ 1.5 倍
+    above_all_short = (
+        not np.isnan(ma5)  and close > ma5  and
+        not np.isnan(ma10) and close > ma10 and
+        not np.isnan(ma20) and close > ma20
+    )
+    if above_all_short and vol_ratio >= 1.5:
+        if vol_ratio >= 2.5:
+            return 0.95, "帶量突破型態🚀 大量穿越均線,首根強攻確立"
+        else:
+            return 0.90, "帶量突破型態🚀 量增穿越短中均線,突破態勢成形"
+
+    # ── 型態 1: 極度壓縮 ─────────────────────────────────────────────
+    # 放寬至 3%(台股除息後均線常有輕微錯位)
+    if ma_spread_pct < 3.0:
+        vol_tag = " + 窒息量蓄勢🌀" if vol_ratio < 0.7 else ""
+        return 0.88, f"壓縮型態🔥 四線合一{vol_tag},能量蓄積中"
+
+    # ── 型態 2: 跌深 KD 極底金叉 ────────────────────────────────────
+    if not np.isnan(ma20) and close < ma20 * 0.93 and k9 < 25 and d9 < 25 and k9 > d9:
+        return 0.82, "跌深反彈💡 負乖離>7%+KD極底金叉,逆轉信號"
+
+    # ── 型態 3: 標準多頭排列(均線已確立) ───────────────────────────
+    if not np.isnan(ma5) and not np.isnan(ma10) and not np.isnan(ma20):
+        if ma60_valid:
+            if ma5 > ma10 > ma20 > ma60 and close > ma5 * 1.005:
+                return 0.88, "多頭排列🚀 四線順排,股價強勢站上均線"
+            if ma5 > ma10 > ma20 and close > ma5:
+                return 0.78, "多頭健走📈 三線順排,趨勢偏多"
+        else:
+            if ma5 > ma10 > ma20 and close > ma5:
+                return 0.78, "多頭健走📈 均線向上排列(MA60資料不足)"
+
+    # ── 型態 4: 收盤 > MA20 且 MA5 已突破 MA20 ───────────────────────
+    if (not np.isnan(ma5) and not np.isnan(ma20) and
+            close > ma20 and ma5 > ma20):
+        return 0.72, "均線蓄力📊 MA5已穿月線,短線偏多"
+
+    # ── 型態 5: 月線附近盤整 ─────────────────────────────────────────
+    if not np.isnan(ma20) and ma20 * 0.96 <= close <= ma20 * 1.06:
+        return 0.50, "月線盤整⏳ 股價在 MA20 附近,方向待確認"
+
+    # ── 型態 6: 偏空 ─────────────────────────────────────────────────
+    return 0.25, "偏空走勢🔻 股價低於均線系統,下方壓力大"
+
+
+def _score_kd_volume(k9: float, d9: float, vol_ratio: float) -> tuple[float, str]:
+    """
+    KD 軸線 + 量能得分 (0~1) + 說明:
+      - 50 上方黃金交叉: 動能最強
+      - < 20 極底金叉: 逆轉信號
+      - 中軸死水: 中性
+      - vol_ratio >= 2: 爆量加分
+    """
+    base = 0.30
+    kd_desc = "KD中軸"
+
+    if k9 > d9:
+        if k9 >= 50:
+            base += 0.40
+            kd_desc = "KD 50上黃金交叉✅"
+        elif k9 < 20:
+            base += 0.35
+            kd_desc = "KD 極底金叉💥"
+        else:
+            base += 0.20
+            kd_desc = "KD 低檔黃金交叉🔸"
+    elif k9 < d9:
+        if k9 > 80:
+            base -= 0.15
+            kd_desc = "KD 高檔死亡交叉⚠️"
+        else:
+            base -= 0.05
+            kd_desc = "KD 死亡交叉🔶"
+
+    vol_desc = ""
+    if vol_ratio >= 3.0:
+        base += 0.30
+        vol_desc = "+ 爆量(>3倍)🔥"
+    elif vol_ratio >= 2.0:
+        base += 0.20
+        vol_desc = "+ 大量(>2倍)⚡"
+    elif vol_ratio >= 1.5:
+        base += 0.10
+        vol_desc = "+ 量增(>1.5倍)"
+    elif vol_ratio < 0.5:
+        base -= 0.05
+        vol_desc = "+ 窒息量🌀"
+
+    return min(max(base, 0.0), 1.0), f"{kd_desc} {vol_desc}".strip()
+
+
+def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
+    """
+    整合三大特徵向量,計算「波段成功率」(0~1)及各分項說明。
+    權重: 時間波 40% + 均線型態 30% + KD/量能 30%
+    """
+    last = df.iloc[-1]
+
+    close = float(last["Close"])
+    k9    = float(last["K9"])   if not np.isnan(last["K9"])   else 50.0
+    d9    = float(last["D9"])   if not np.isnan(last["D9"])   else 50.0
+
+    ma5   = float(last["MA5"])  if not np.isnan(last["MA5"])  else np.nan
+    ma10  = float(last["MA10"]) if not np.isnan(last["MA10"]) else np.nan
+    ma20  = float(last["MA20"]) if not np.isnan(last["MA20"]) else np.nan
+    ma60  = float(last["MA60"]) if not np.isnan(last["MA60"]) else np.nan
+
+    vol       = float(last["Volume"])
+    vol_ma5   = float(last["VolMA5"]) if not np.isnan(last["VolMA5"]) else vol
+    vol_ratio = vol / vol_ma5 if vol_ma5 > 0 else 1.0
+
+    # MA 壓縮程度:有效均線間的最大-最小距離 / 收盤價 × 100(%)
+    valid_mas = [v for v in [ma5, ma10, ma20, ma60] if not np.isnan(v)]
+    if len(valid_mas) >= 2:
+        ma_spread_pct = (max(valid_mas) - min(valid_mas)) / close * 100
+    else:
+        ma_spread_pct = 5.0
+
+    r = dna["R_cycle"]
+    # ★ 傳入「修正低點」資訊,讓時間波能區分「修正中」vs「上漲段」
+    s_t, desc_t = _score_r_cycle(
+        r,
+        days_since_trough      = dna.get("days_since_trough", -1),
+        actual_correction_days = dna.get("actual_correction_days"),
+        T_median               = dna["T_median"],
+    )
+    # ★ 修正 A: 傳入 vol_ratio 給 _score_ma_pattern,讓「帶量突破」型態能被識別
+    s_ma, desc_ma = _score_ma_pattern(close, ma5, ma10, ma20, ma60,
+                                       k9, d9, ma_spread_pct, vol_ratio)
+    s_kd, desc_kd = _score_kd_volume(k9, d9, vol_ratio)
+
+    winrate = s_t * 0.40 + s_ma * 0.30 + s_kd * 0.30
+
+    # 三大生命週期分類
+    if winrate >= 0.70:
+        category = "top"
+        category_label = "🚀 頂級浪潮"
+    elif winrate >= 0.50:
+        category = "mid"
+        category_label = "⏳ 中繼蓄勢"
+    else:
+        category = "warn"
+        category_label = "🛑 警戒浪潮"
+
+    return {
+        "winrate":        round(winrate, 4),
+        "s_time":         round(s_t, 3),
+        "s_ma":           round(s_ma, 3),
+        "s_kd":           round(s_kd, 3),
+        "desc_time":      desc_t,
+        "desc_ma":        desc_ma,
+        "desc_kd":        desc_kd,
+        "ma_spread_pct":  round(ma_spread_pct, 2),
+        "vol_ratio":      round(vol_ratio, 2),
+        "k9": round(k9, 1), "d9": round(d9, 1),
+        "category":       category,
+        "category_label": category_label,
+        "close": close,
+        "ma20": ma20 if not np.isnan(ma20) else close,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  模組 C: 未來 10 日前瞻路徑矩陣
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_forward_matrix(
+    df: pd.DataFrame,
+    wr: dict,
+    dna: dict,
+    n_days: int = 10
+) -> list[dict]:
+    """
+    根據「分類」與「ATR14」動態生成未來 n_days 個交易日的預估路徑。
+
+    模型說明:
+      - 基礎漂移(drift):
+          頂級浪潮 → 每日漂移 = +0.30% × 勝率乘數
+          中繼蓄勢 → 每日漂移 = +0.10% (早期) → +0.20% (後期)
+          警戒浪潮 → 每日漂移 = -0.15% (反彈後繼續壓制)
+      - 不確定性幅度: ± ATR14 × 衰減係數(越遠越寬)
+      - 配合 R_cycle 在特定天數加入「型態轉折說明」觀測點
+    """
+    last_close = float(df["Close"].iloc[-1])
+    atr        = float(df["ATR14"].iloc[-1]) if not np.isnan(df["ATR14"].iloc[-1]) else last_close * 0.02
+    cat        = wr["category"]
+    winrate    = wr["winrate"]
+    r          = dna["R_cycle"]
+    t_median   = dna["T_median"]
+
+    # 每日基礎漂移設定
+    if cat == "top":
+        daily_drift = 0.003 * winrate   # 最高約 0.3%/日
+    elif cat == "mid":
+        daily_drift = 0.001             # 保守 0.1%/日
+    else:
+        daily_drift = -0.0015           # 緩步壓制
+
+    # 跳過週末的交易日曆
+    last_date   = df.index[-1].to_pydatetime()
+    biz_dates   = []
+    d = last_date
+    while len(biz_dates) < n_days:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            biz_dates.append(d)
+
+    rows = []
+    price = last_close
+    for i, biz_d in enumerate(biz_dates, start=1):
+        price = price * (1 + daily_drift)
+        # 不確定性幅度: ATR × sqrt(i) × 比例因子
+        band  = atr * (i ** 0.5) * 0.35
+
+        # 個別天的觀測說明
+        if cat == "top":
+            if i == 1:
+                note = "觀察是否延續漲勢,量能能否持續放大"
+            elif i <= 3:
+                note = "強勢整理或小幅震盪蓄勢,不破 MA5 視為健康"
+            elif i <= 6:
+                note = "若出現縮量長紅 → 主力換手完成,加速動力浮現"
+            else:
+                note = "留意高檔放量長黑或 KD 鈍化高檔背離訊號"
+        elif cat == "mid":
+            if i <= 2:
+                note = "等待觸媒出現:量縮收小紅 / 均線黏合走平"
+            elif i <= 5:
+                note = f"若 R_cycle 超過 {r:.2f}→1.0 臨界可能出現反轉"
+            else:
+                note = "觀察均線交叉與 KD 黃金交叉是否同步確立"
+        else:  # warn
+            if i <= 3:
+                note = "反彈進入壓力區,短線宜輕倉或觀望"
+            elif i <= 7:
+                note = "R_cycle 未飽和,反彈高度有限,留意反彈峰賣出"
+            else:
+                note = "若 KD 未能黃金交叉,波段壓力仍未解除"
+
+        rows.append({
+            "交易日":   f"D+{i}",
+            "預估日期": biz_d.strftime("%m/%d (%a)"),
+            "演算法預估價":  round(price, 2),
+            "上限參考":     round(price + band, 2),
+            "下限參考":     round(price - band, 2),
+            "型態觀測重點": note,
+        })
+
+    return rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HTML 渲染工具
+# ─────────────────────────────────────────────────────────────────────────────
+
+def html_metric(label: str, value: str, sub: str = "") -> str:
+    return f"""
+    <div class="dna-card">
+      <h3>{label}</h3>
+      <div class="val">{value}</div>
+      {"<div class='sub'>"+sub+"</div>" if sub else ""}
+    </div>"""
+
+
+def html_feat_bar(label: str, score: float, desc: str, color: str = "#00f5d4") -> str:
+    pct = int(score * 100)
+    return f"""
+    <div class="feat-row">
+      <span class="feat-label">{label}</span>
+      <div class="feat-bar-wrap">
+        <div class="feat-bar-fill" style="width:{pct}%;background:{color};"></div>
+      </div>
+      <span class="feat-val">{pct}%</span>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
+                color:#5c7a9e;margin:-6px 0 10px 132px;">{desc}</div>"""
+
+
+def html_forward_table(rows: list[dict], last_close: float) -> str:
+    head = "<thead><tr>" + "".join(
+        f"<th>{col}</th>" for col in ["交易日","預估日期","演算法預估價","±幅度","型態觀測重點"]
+    ) + "</tr></thead>"
+
+    tbody = ""
+    for r in rows:
+        p  = r["演算法預估價"]
+        hi = r["上限參考"]
+        lo = r["下限參考"]
+        chg = (p - last_close) / last_close * 100
+        if chg > 0.5:   cls = "price-up"
+        elif chg < -0.5: cls = "price-down"
+        else:            cls = "price-flat"
+
+        band_str = f'+{hi-p:.2f} / -{p-lo:.2f}'
+        tbody += f"""<tr>
+          <td>{r['交易日']}</td>
+          <td>{r['預估日期']}</td>
+          <td class="{cls}">{p:.2f} ({chg:+.1f}%)</td>
+          <td style="color:#5c7a9e;font-size:11px;">{band_str}</td>
+          <td style="color:#4a6fa5;font-size:13px;">{r['型態觀測重點']}</td>
+        </tr>"""
+
+    return f'<table class="fwd-table">{head}<tbody>{tbody}</tbody></table>'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  台灣熱門 100 檔預設清單
+#  分類: 半導體 / AI供應鏈 / 電子零組件 / 面板 / 金融 / 傳產 / 航運 / 生技 / 其他
+# ─────────────────────────────────────────────────────────────────────────────
+TW_HOT_100 = [
+    # ── 半導體龍頭 ──────────────────────────────────────────────────────
+    "2330","2303","2454","2379","3034","6770","2344","3711","3533","2408",
+    # ── AI / 伺服器 / 散熱 / CoWoS ─────────────────────────────────────
+    "2317","3008","2357","6669","3231","6274.TWO","5274.TWO","8150","4919","6415",
+    # ── PCB / 電路板 / 載板 ─────────────────────────────────────────────
+    "2301","3037","6153","8046","6269","3024","2383","6456","4961","3706",
+    # ── 被動元件 / 電子材料 ─────────────────────────────────────────────
+    "2327","2354","2382","3019","6789","2376","5483.TWO","3443","6214","2439",
+    # ── 網通 / 電信 ─────────────────────────────────────────────────────
+    "2412","3045","4904","2498","3044","6488.TWO","4906","2915","3026","5434",
+    # ── 金融 ────────────────────────────────────────────────────────────
+    "2882","2881","2886","2891","2884","2885","2887","2892","2801","5880",
+    # ── 傳產 / 原物料 / 塑化 ────────────────────────────────────────────
+    "1301","1303","1326","2002","9904","1101","1216","1402","2105","1210",
+    # ── 航運 / 貨櫃 / 空運 ──────────────────────────────────────────────
+    "2603","2609","2615","2610","5608","2617","2618","2606","2637","2634",
+    # ── 光電 / 面板 / 光學 ──────────────────────────────────────────────
+    "3481","2409","8299.TWO","6409","3691.TWO","2449","3035","2395","5269","3653",
+    # ── 生技 / 醫療 / CDMO ──────────────────────────────────────────────
+    "4711.TWO","6446","4726.TWO","4537.TWO","1796.TWO","6547.TWO","4174.TWO","4164","6509.TWO","4729.TWO",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  批量掃描引擎 (ThreadPoolExecutor 並行下載)
+# ─────────────────────────────────────────────────────────────────────────────
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _scan_one(ticker: str, period: str) -> dict | None:
+    """
+    掃描單一股票,回傳精簡結果 dict;若資料取得失敗回傳 None。
+    此函式會被 ThreadPoolExecutor 並行呼叫。
+    """
+    try:
+        df, used = fetch_data(ticker, period=period)
+        if df is None or len(df) < 60:
+            return None
+        df  = add_indicators(df)
+        dna = detect_wave_dna(df)
+        wr  = compute_winrate(dna, df)
+        last = df.iloc[-1]
+        return {
+            "代號":       used,
+            "input":      ticker,         # 原始輸入(用於點擊展開)
+            "收盤價":     round(float(last["Close"]), 2),
+            "勝率":       round(wr["winrate"] * 100, 1),
+            "分類":       wr["category_label"],
+            "category":   wr["category"],
+            "R_cycle":    dna["R_cycle"],
+            "T_median":   dna["T_median"],
+            "D_current":  dna["D_current"],
+            "均線型態":   wr["desc_ma"],
+            "KD狀態":     wr["desc_kd"],
+            "時間波":     wr["desc_time"],
+            "K9":         wr["k9"],
+            "D9":         wr["d9"],
+            "量比":       wr["vol_ratio"],
+            "days_trough": dna.get("days_since_trough", -1),
+            "corr_end":   dna.get("correction_end_date"),
+        }
+    except Exception:
+        return None
+
+
+def run_batch_scan(tickers: list[str], period: str,
+                   progress_bar, status_text) -> list[dict]:
+    """
+    以 ThreadPoolExecutor 並行下載並分析所有股票。
+    每完成一檔就更新進度條。
+    """
+    results   = []
+    total     = len(tickers)
+    completed = 0
+
+    # max_workers=10:同時 10 條線程,避免 Yahoo Finance 限流
+    with ThreadPoolExecutor(max_workers=10) as exe:
+        future_map = {exe.submit(_scan_one, t, period): t for t in tickers}
+        for fut in as_completed(future_map):
+            completed += 1
+            progress_bar.progress(completed / total)
+            status_text.markdown(
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;'
+                f'font-size:12px;color:#5c7a9e;">'
+                f'掃描中 {completed}/{total} ── {future_map[fut]}</span>',
+                unsafe_allow_html=True
+            )
+            res = fut.result()
+            if res:
+                results.append(res)
+
+    # 依勝率降序排列
+    results.sort(key=lambda x: x["勝率"], reverse=True)
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  掃描結果 HTML 表格渲染
+# ─────────────────────────────────────────────────────────────────────────────
+
+def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
+    """
+    將批量掃描結果渲染為可視化 HTML 表格。
+    只顯示勝率 >= min_winrate 的列。
+    """
+    filtered = [r for r in rows if r["勝率"] >= min_winrate]
+    if not filtered:
+        return '<div style="color:#5c7a9e;font-family:\'IBM Plex Mono\',monospace;padding:20px;">無符合條件的標的</div>'
+
+    cat_color = {"top": "#00f5d4", "mid": "#ffd166", "warn": "#ff4d6d"}
+
+    head = """
+    <table class="fwd-table" style="font-size:12px;">
+      <thead>
+        <tr>
+          <th>#</th><th>代號</th><th>收盤</th>
+          <th>勝率</th><th>分類</th>
+          <th>R_cycle</th><th>T_median</th><th>D_current</th>
+          <th>均線型態</th><th>KD狀態</th>
+        </tr>
+      </thead><tbody>"""
+
+    body = ""
+    for i, r in enumerate(filtered, 1):
+        cat   = r["category"]
+        color = cat_color.get(cat, "#ffffff")
+        wr    = r["勝率"]
+
+        # 勝率橫條(迷你版)
+        bar = (f'<div style="display:flex;align-items:center;gap:6px;">'
+               f'<div style="width:60px;background:#1e2d45;border-radius:4px;height:6px;">'
+               f'<div style="width:{wr}%;height:6px;border-radius:4px;background:{color};"></div>'
+               f'</div>'
+               f'<span style="color:{color};font-weight:600;">{wr:.1f}%</span>'
+               f'</div>')
+
+        body += f"""
+        <tr>
+          <td style="color:#7a9bbf;">{i}</td>
+          <td style="color:#00f5d4;font-weight:600;">{r['代號']}</td>
+          <td style="color:#e7edf6;">{r['收盤價']}</td>
+          <td>{bar}</td>
+          <td><span style="color:{color};font-weight:600;font-size:11px;">{r['分類']}</span></td>
+          <td style="color:#d97706;">{r['R_cycle']:.3f}</td>
+          <td style="color:#4a6fa5;">{r['T_median']:.0f}天</td>
+          <td style="color:#4a6fa5;">{r['D_current']}天</td>
+          <td style="color:#8aa3c2;font-size:11px;">{r['均線型態'][:20]}</td>
+          <td style="color:#8aa3c2;font-size:11px;">{r['KD狀態'][:20]}</td>
+        </tr>"""
+
+    return head + body + "</tbody></table>"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sidebar
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("""
+        <div style="font-family:'IBM Plex Mono',monospace;margin-bottom:18px;">
+          <div style="font-size:18px;font-weight:700;color:#00f5d4;letter-spacing:1px;">🧬 波浪 DNA</div>
+          <div style="font-size:10px;color:#7a9bbf;letter-spacing:2px;margin-top:4px;">
+            DYNAMIC WAVE CYCLE DNA
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── 模式切換 ──────────────────────────────────────────────────────
+        mode = st.radio(
+            "分析模式",
+            ["🔍 單股分析", "📡 批量掃描"],
+            horizontal=True,
+        )
+
+        st.markdown("---")
+
+        if mode == "🔍 單股分析":
+            ticker = st.text_input(
+                "股票代號", value="8150",
+                placeholder="台股: 2330 / 8150  美股: AAPL",
+                help="台股輸入數字代號即可(自動補 .TW),美股輸入英文代號"
+            )
+        else:
+            ticker = ""
+
+        # ── 批量掃描參數 ────────────────────────────────────────────────
+        if mode == "📡 批量掃描":
+            st.markdown('<div style="font-size:10px;color:#7a9bbf;letter-spacing:2px;margin-bottom:6px;">掃描清單</div>',
+                        unsafe_allow_html=True)
+
+            # 自選股輸入框 ── 每行一個代號,或逗號分隔
+            custom_raw = st.text_area(
+                "✏️ 自選股 (可空白)",
+                placeholder="每行或逗號分隔\n例: 8150\n2330\nAAPL",
+                height=100,
+                help="留空則使用台灣熱門100檔；填入代號後,自選股會優先列在掃描清單最前面"
+            )
+
+            use_hot100 = st.checkbox("合併台灣熱門100檔", value=True,
+                                      help="勾選後自選股 + 熱門100檔一起掃描")
+
+            min_wr = st.slider("最低勝率門檻 (%)", 0, 90, 70, step=5,
+                               help="只顯示勝率大於此值的標的")
+
+        st.markdown("---")
+        st.markdown('<div style="font-size:10px;color:#7a9bbf;letter-spacing:2px;">WAVE DNA 參數</div>',
+                    unsafe_allow_html=True)
+        period = st.selectbox("歷史資料期間", ["2y", "1y", "3y"], index=0)
+        top_n  = st.slider("前瞻天數", 5, 20, 10, step=5)
+
+        st.markdown("---")
+
+        if mode == "🔍 單股分析":
+            analyze = st.button("🔍 開始 DNA 分析", use_container_width=True, type="primary")
+            scan    = False
+            custom_raw = ""
+            min_wr  = 70
+            use_hot100 = True
+        else:
+            scan    = st.button("📡 開始批量掃描", use_container_width=True, type="primary")
+            analyze = False
+
+        st.markdown("""
+        <div style="font-size:10px;color:#7a9bbf;margin-top:18px;line-height:1.8;">
+        <b style="color:#4a6fa5;">三大分類說明</b><br>
+        🚀 頂級浪潮 ── 勝率 ≥ 70%<br>
+        ⏳ 中繼蓄勢 ── 勝率 50-70%<br>
+        🛑 警戒浪潮 ── 勝率 &lt; 50%
+        </div>
+        """, unsafe_allow_html=True)
+
+    return (ticker.strip(), period, top_n, analyze,
+            scan, custom_raw, min_wr, use_hot100, mode)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  UI 渲染函式群
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_dna_stats(dna: dict):
+    """波浪 DNA 統計看板 (修正週期慣性)"""
+    st.markdown('<div class="section-title">🧬 兩年波浪 DNA 統計</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("T_median 修正中位數", f"{dna['T_median']:.0f} 天",
+                  help="個股過去兩年所有修正波段天數的中位數,作為 R_cycle 基準分母")
+    with c2:
+        st.metric("T_mean 平均修正天數", f"{dna['T_mean']:.0f} 天")
+    with c3:
+        st.metric("T_std 修正週期標準差", f"{dna['T_std']:.1f} 天",
+                  help="越小代表個股修正週期慣性越規律,R_cycle 預測可信度越高")
+    with c4:
+        st.metric("修正波段樣本數", f"{len(dna['corrections'])} 組")
+
+    atr_pct = dna.get("atr_pct", 0)
+    dist    = dna.get("distance_used", 15)
+    vol_type = "低波動型(漣漪股)" if atr_pct < 1.5 else "標準型" if atr_pct < 3.0 else "高波動型"
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#4a6fa5;
+                margin-top:8px;margin-bottom:4px;display:flex;gap:24px;flex-wrap:wrap;">
+      <span>ATR日均波動率: <b style="color:#1565c0;">{atr_pct:.2f}%</b></span>
+      <span>動態波段最小間距: <b style="color:#1565c0;">{dist} 天</b>
+            <span style="color:#7a9bbf;font-size:12px;">({vol_type})</span>
+      </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if dna["corrections"]:
+        corr_df = pd.DataFrame({"修正天數(天)": dna["corrections"]})
+        st.bar_chart(corr_df, use_container_width=True, height=110)
+
+
+def render_r_cycle(dna: dict, wr: dict, used_ticker: str):
+    """主要核心指標區 + 分類標籤"""
+    close     = wr["close"]
+    r         = dna["R_cycle"]
+    d_cur     = dna["D_current"]
+    t_med     = dna["T_median"]
+    category  = wr["category"]
+    cat_label = wr["category_label"]
+
+    css_map = {"top": "label-top", "mid": "label-mid", "warn": "label-warn"}
+    st.markdown(
+        f'<div class="dna-label {css_map[category]}">{cat_label}</div>',
+        unsafe_allow_html=True
+    )
+
+    # R_cycle 顏色(淺色系)
+    r_color = "#0a7c59" if 0.95 <= r <= 1.25 else \
+              "#d97706" if r >= 0.60 else "#c0392b"
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(html_metric("當前收盤價", f"{close:.2f}",
+                                f"最近波峰: {dna['last_peak_date']} @ {dna['last_peak_price']}"),
+                    unsafe_allow_html=True)
+    with c2:
+        st.markdown(html_metric("D_current 拉回天數", f"{d_cur} 天",
+                                f"自 {dna['last_peak_date']} 起"),
+                    unsafe_allow_html=True)
+    with c3:
+        st.markdown(html_metric("T_median 慣性基準", f"{t_med:.0f} 天",
+                                "個股兩年修正週期中位數"),
+                    unsafe_allow_html=True)
+    with c4:
+        st.markdown(html_metric(
+            "R_cycle 週期對稱率",
+            f'<span style="color:{r_color};font-size:30px;">{r:.3f}</span>',
+            wr["desc_time"]
+        ), unsafe_allow_html=True)
+
+    r_pct = min(r / 1.5, 1.0) * 100
+    st.markdown(f"""
+    <div style="margin-top:8px;margin-bottom:6px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4a6fa5;
+                  letter-spacing:1px;margin-bottom:6px;">
+        R_CYCLE ── 0%(未修正) → 100%(T_median 臨界) → 150%+(超額修正)
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" style="width:{r_pct:.1f}%;background:{r_color};"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;
+                  font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7a9bbf;margin-top:4px;">
+        <span>0%</span><span style="color:#d97706;">60%</span>
+        <span style="color:#d97706;">80%</span>
+        <span style="color:{r_color};font-weight:700;">100% ← 共振臨界</span>
+        <span>150%+</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 若修正低點已確認,顯示補充資訊
+    if dna.get("correction_end_date"):
+        st.markdown(f"""
+        <div style="background:#e8f4ec;border:1.5px solid #0a7c59;border-radius:8px;
+                    padding:10px 16px;margin-top:8px;font-size:14px;color:#0a5c42;">
+          ✅ 修正低點已確認：{dna['correction_end_date']} @ <b>{dna['correction_end_price']}</b>
+          　｜　實際修正 {dna['actual_correction_days']} 天
+          　｜　反彈已走 <b>{dna['days_since_trough']}</b> 天
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_feature_scores(wr: dict):
+    """特徵分數條形圖(淺藍色系)"""
+    st.markdown('<div class="section-title">⚙️ 特徵向量評分</div>', unsafe_allow_html=True)
+
+    colors = {"time": "#1565c0", "ma": "#d97706", "kd": "#6d28d9"}
+
+    st.markdown(html_feat_bar("時間波 (×40%)", wr["s_time"], wr["desc_time"], colors["time"]),
+                unsafe_allow_html=True)
+    st.markdown(html_feat_bar("均線型態 (×30%)", wr["s_ma"], wr["desc_ma"], colors["ma"]),
+                unsafe_allow_html=True)
+    st.markdown(html_feat_bar("KD+量能 (×30%)", wr["s_kd"], wr["desc_kd"], colors["kd"]),
+                unsafe_allow_html=True)
+
+    wrate_pct = int(wr["winrate"] * 100)
+    w_color   = "#0a7c59" if wrate_pct >= 70 else "#d97706" if wrate_pct >= 50 else "#c0392b"
+    w_bg      = "#e8f4ec" if wrate_pct >= 70 else "#fef3c7" if wrate_pct >= 50 else "#fde8e8"
+
+    st.markdown(f"""
+    <div class="dna-card" style="border-color:{w_color};background:{w_bg};margin-top:6px;">
+      <h3>綜合波段成功率 (加權)</h3>
+      <div style="display:flex;align-items:baseline;gap:12px;">
+        <div class="val" style="color:{w_color};font-size:40px;">{wrate_pct}%</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#4a6fa5;">
+          時間波×0.4 + 均線×0.3 + KD/量×0.3
+        </div>
+      </div>
+      <div class="bar-wrap" style="margin-top:10px;">
+        <div class="bar-fill" style="width:{wrate_pct}%;background:{w_color};"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;
+                  font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7a9bbf;margin-top:6px;">
+        <span>0%</span><span>50% 蓄勢</span><span style="color:{w_color};font-weight:700;">70% 頂級</span><span>100%</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#4a6fa5;
+                display:flex;gap:20px;margin-top:6px;flex-wrap:wrap;">
+      <span>9K: <b style="color:#1a2b3c;">{wr['k9']:.1f}</b></span>
+      <span>9D: <b style="color:#1a2b3c;">{wr['d9']:.1f}</b></span>
+      <span>均線壓縮度: <b style="color:#1a2b3c;">{wr['ma_spread_pct']:.2f}%</b></span>
+      <span>量比: <b style="color:#1a2b3c;">{wr['vol_ratio']:.2f}x</b></span>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_forward_table(rows: list[dict], last_close: float):
+    """未來 N 日前瞻路徑矩陣"""
+    st.markdown('<div class="section-title">📅 前瞻路徑矩陣 (演算法預估)</div>',
+                unsafe_allow_html=True)
+    st.markdown("""
+    <div style="font-size:13px;color:#4a6fa5;margin-bottom:12px;line-height:1.6;
+                background:#eaf2fb;border-left:4px solid #1565c0;padding:10px 14px;border-radius:6px;">
+    ⚠️ 本矩陣由「波浪DNA慣性 × ATR波動帶 × 型態分類漂移」動態生成，僅供型態研究參考，非投資建議。
+    上下限幅度隨預估天數遞增（越遠不確定性越大）。
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown(html_forward_table(rows, last_close), unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  主程式入口
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    (ticker_raw, period, top_n, analyze,
+     scan, custom_raw, min_wr, use_hot100, mode) = render_sidebar()
+
+    # 頁面標題
+    st.markdown("""
+    <div style="margin-bottom:22px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;
+                  letter-spacing:3px;color:#7a9bbf;margin-bottom:6px;">
+        QUANTITATIVE WAVE ANALYSIS SYSTEM
+      </div>
+      <h1 style="font-family:'IBM Plex Mono',monospace;font-size:24px;
+                 font-weight:700;color:#1a2b3c;margin:0;">
+        🧬 動態波浪週期 DNA 匹配系統
+      </h1>
+      <div style="font-size:13px;color:#4a6fa5;margin-top:6px;">
+        Dynamic Wave Cycle DNA Matching ── 拒絕死板天數,演算法動態學習個股生理鐘慣性
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    #  模式 A: 批量掃描
+    # ════════════════════════════════════════════════════════════════════
+    if mode == "📡 批量掃描":
+        if not scan:
+            st.markdown("""
+            <div class="dna-card" style="text-align:center;padding:40px;">
+              <div style="font-size:36px;margin-bottom:12px;">📡</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#5c7a9e;">
+                設定掃描參數後,按下「開始批量掃描」
+              </div>
+              <div style="font-size:12px;color:#7a9bbf;margin-top:10px;line-height:1.8;">
+                系統將以多線程並行下載所有標的的近2年K線，<br>
+                自動計算波浪DNA勝率，篩選出高機率標的。<br>
+                <b style="color:#d97706;">預計耗時: 100檔約 15~25 秒</b>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+            return
+
+        # ── 組合掃描清單 ──────────────────────────────────────────────
+        custom_tickers = []
+        if custom_raw.strip():
+            # 支援逗號或換行分隔
+            raw_list = custom_raw.replace(",", "\n").split("\n")
+            custom_tickers = [t.strip().upper() for t in raw_list if t.strip()]
+
+        scan_list = []
+        seen = set()
+        for t in custom_tickers:
+            if t not in seen:
+                scan_list.append(t); seen.add(t)
+        if use_hot100:
+            for t in TW_HOT_100:
+                if t not in seen:
+                    scan_list.append(t); seen.add(t)
+
+        total = len(scan_list)
+
+        # ── 掃描 UI ───────────────────────────────────────────────────
+        st.markdown(f"""
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#5c7a9e;
+                    margin-bottom:12px;">
+          📡 開始掃描 <b style="color:#1565c0;">{total}</b> 檔標的
+          (自選 {len(custom_tickers)} + 熱門 {total - len(custom_tickers)})
+          ── 勝率門檻 ≥ <b style="color:#d97706;">{min_wr}%</b>
+        </div>
+        """, unsafe_allow_html=True)
+
+        prog_bar    = st.progress(0)
+        status_text = st.empty()
+
+        import time
+        t0      = time.time()
+        results = run_batch_scan(scan_list, period, prog_bar, status_text)
+        elapsed = time.time() - t0
+
+        prog_bar.empty()
+        status_text.empty()
+
+        # ── 統計摘要 ─────────────────────────────────────────────────
+        top_count  = sum(1 for r in results if r["category"] == "top")
+        mid_count  = sum(1 for r in results if r["category"] == "mid")
+        warn_count = sum(1 for r in results if r["category"] == "warn")
+        hit_count  = sum(1 for r in results if r["勝率"] >= min_wr)
+        fail_count = total - len(results)
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("掃描完成", f"{len(results)} 檔", f"失敗 {fail_count} 檔")
+        c2.metric("🚀 頂級浪潮", f"{top_count} 檔")
+        c3.metric("⏳ 中繼蓄勢", f"{mid_count} 檔")
+        c4.metric("🛑 警戒浪潮", f"{warn_count} 檔")
+        c5.metric(f"≥{min_wr}% 標的", f"{hit_count} 檔",
+                  f"耗時 {elapsed:.1f}s")
+
+        # ── 高勝率篩選結果 ────────────────────────────────────────────
+        st.markdown(f'<div class="section-title">🎯 高勝率標的 (≥ {min_wr}%)</div>',
+                    unsafe_allow_html=True)
+
+        hit_results = [r for r in results if r["勝率"] >= min_wr]
+
+        if not hit_results:
+            st.warning(f"⚠️ 目前沒有勝率 ≥ {min_wr}% 的標的。建議降低門檻或換個掃描清單。")
+        else:
+            st.markdown(html_scan_table(hit_results, min_winrate=0),
+                        unsafe_allow_html=True)
+
+            # ── 點擊展開完整分析 ────────────────────────────────────
+            st.markdown('<div class="section-title">🔬 展開個股完整 DNA 分析</div>',
+                        unsafe_allow_html=True)
+            st.markdown("""
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
+                        color:#7a9bbf;margin-bottom:10px;">
+              從下拉選單選擇任一高勝率標的,即可展開完整 DNA 分析報告
+            </div>
+            """, unsafe_allow_html=True)
+
+            choices  = [f"{r['代號']}  ({r['勝率']:.1f}%)  {r['分類']}"
+                        for r in hit_results]
+            selected = st.selectbox("選擇標的", choices, index=0)
+
+            if selected:
+                sel_idx = choices.index(selected)
+                sel_row = hit_results[sel_idx]
+                sel_ticker = sel_row["input"]
+
+                with st.spinner(f"載入 {sel_row['代號']} 完整分析..."):
+                    df_sel, used_sel = fetch_data(sel_ticker, period=period)
+
+                if df_sel is not None and len(df_sel) >= 60:
+                    df_sel  = add_indicators(df_sel)
+                    dna_sel = detect_wave_dna(df_sel)
+                    wr_sel  = compute_winrate(dna_sel, df_sel)
+
+                    st.markdown(f"""
+                    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;
+                                color:#5c7a9e;margin:12px 0;">
+                      ▶ 展開分析: <b style="color:#1565c0;">{used_sel}</b> ──
+                      {len(df_sel)} 個交易日
+                      ({df_sel.index[0].strftime('%Y-%m-%d')} ~ {df_sel.index[-1].strftime('%Y-%m-%d')})
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    render_r_cycle(dna_sel, wr_sel, used_sel)
+                    st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
+
+                    col_l, col_r = st.columns(2, gap="large")
+                    with col_l: render_dna_stats(dna_sel)
+                    with col_r: render_feature_scores(wr_sel)
+
+                    rows_fwd = generate_forward_matrix(df_sel, wr_sel, dna_sel, n_days=top_n)
+                    render_forward_table(rows_fwd, wr_sel["close"])
+
+                    chart_df = df_sel[["Close","MA5","MA20","MA60"]].tail(120).dropna(subset=["Close"])
+                    st.line_chart(chart_df, use_container_width=True, height=180)
+
+        # ── 完整掃描結果(含低勝率,可折疊) ──────────────────────────
+        with st.expander(f"📋 顯示全部 {len(results)} 檔掃描結果(含低勝率)"):
+            st.markdown(html_scan_table(results, min_winrate=0),
+                        unsafe_allow_html=True)
+
+        # ── 可下載的 CSV ─────────────────────────────────────────────
+        if results:
+            import io
+            out_rows = []
+            for r in results:
+                out_rows.append({
+                    "代號": r["代號"], "收盤價": r["收盤價"],
+                    "勝率(%)": r["勝率"], "分類": r["分類"],
+                    "R_cycle": r["R_cycle"], "T_median": r["T_median"],
+                    "D_current": r["D_current"],
+                    "均線型態": r["均線型態"], "KD狀態": r["KD狀態"],
+                    "時間波說明": r["時間波"],
+                })
+            csv_df  = pd.DataFrame(out_rows)
+            csv_buf = io.StringIO()
+            csv_df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+            st.download_button(
+                "⬇️ 下載掃描結果 CSV",
+                data=csv_buf.getvalue().encode("utf-8-sig"),
+                file_name=f"wave_dna_scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+            )
+
+        st.markdown(f"""
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
+                    margin-top:18px;text-align:center;">
+          ⚠️ 本系統僅供技術型態研究,不構成任何投資建議。數據來源: Yahoo Finance。
+          掃描完成時間: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ════════════════════════════════════════════════════════════════════
+    #  模式 B: 單股分析 (原有邏輯)
+    # ════════════════════════════════════════════════════════════════════
+    if not analyze:
+        st.markdown("""
+        <div class="dna-card" style="text-align:center;padding:40px;">
+          <div style="font-size:36px;margin-bottom:12px;">🧬</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#4a6fa5;">
+            在左側輸入股票代號,按下「開始 DNA 分析」
+          </div>
+          <div style="font-size:12px;color:#7a9bbf;margin-top:8px;">
+            台股輸入數字代號(如 2330、8150)，美股輸入英文代號(如 AAPL、NVDA)<br>
+            <b style="color:#d97706;">或切換至「批量掃描」模式,一次篩選所有高勝率標的</b>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    with st.spinner(f"正在下載「{ticker_raw}」近 {period} 日線資料..."):
+        df, used_ticker = fetch_data(ticker_raw, period=period)
+
+    if df is None or len(df) < 60:
+        st.error(
+            f"❌ 無法取得「{ticker_raw}」的資料。\n\n"
+            f"**可能原因:**\n"
+            f"- 興櫃股票(如部分銀行、生技)不在 Yahoo Finance 資料庫\n"
+            f"- 代號格式有誤(台股只需輸入數字,如 2330)\n"
+            f"- 上市時間太短(不足 60 個交易日)\n\n"
+            f"**建議:** 可試試直接輸入帶後綴的代號,如 `2330.TW` 或 `2330.TWO`"
+        )
+        return
+
+    df  = add_indicators(df)
+    dna = detect_wave_dna(df)
+    wr  = compute_winrate(dna, df)
+
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4a6fa5;
+                margin-bottom:16px;">
+      ▶ 已分析: <b style="color:#1565c0;font-weight:700;">{used_ticker}</b> ──
+      {len(df)} 個交易日 ({df.index[0].strftime('%Y-%m-%d')} ~ {df.index[-1].strftime('%Y-%m-%d')})
+    </div>
+    """, unsafe_allow_html=True)
+
+    render_r_cycle(dna, wr, used_ticker)
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([1, 1], gap="large")
+    with col_left:  render_dna_stats(dna)
+    with col_right: render_feature_scores(wr)
+
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+    rows = generate_forward_matrix(df, wr, dna, n_days=top_n)
+    render_forward_table(rows, wr["close"])
+
+    st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>', unsafe_allow_html=True)
+    chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
+    st.line_chart(chart_df, use_container_width=True, height=200)
+
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
+                margin-top:18px;text-align:center;">
+      ⚠️ 本系統僅供技術型態研究,不構成任何投資建議。數據來源: Yahoo Finance (yfinance)。
+      最後更新: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    main()
