@@ -26,6 +26,15 @@ import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
 import datetime
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# EquityQuery 用於即時抓取台灣熱門排行
+try:
+    from yfinance.screener.query import EquityQuery
+    _EQUITY_QUERY_AVAILABLE = True
+except ImportError:
+    _EQUITY_QUERY_AVAILABLE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  全域設定
@@ -1132,6 +1141,106 @@ TW_ELECTRONIC_759 = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  即時台灣熱門排行函式 (每次掃描前動態抓取,非靜態清單)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)   # 快取 5 分鐘,避免重複打 API
+def fetch_tw_realtime_hot(
+    rank_type: str = 'volume',
+    size: int = 100,
+    min_price: float = 5.0,
+    min_vol: int = 1_000_000,
+) -> tuple[list[str], list[dict]]:
+    """
+    即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行股票代號。
+
+    rank_type:
+      'volume'  — 今日成交量最大(量能最強)
+      'gain'    — 今日漲幅最大(強勢股)
+      'loss'    — 今日跌幅最大(弱勢/超跌反彈)
+
+    回傳:
+      tickers   : [str]  可直接送入批量掃描的代號清單(含 .TW/.TWO 後綴)
+      meta_list : [dict] 每檔的即時資訊(代號/股名/現價/漲跌幅/成交量)
+
+    過濾條件(避免認股權證、期貨等混入):
+      - 代號必須是純 4 位數字 (排除 6~7 位的認股權/選擇權)
+      - 股價 >= min_price 元
+      - 成交量 >= min_vol 股
+      - 漲跌幅絕對值 <= 15% (排除異常極端股)
+    """
+    if not _EQUITY_QUERY_AVAILABLE:
+        return [], []
+
+    sort_map = {
+        'volume': ('dayvolume', False),
+        'gain':   ('percentchange', False),
+        'loss':   ('percentchange', True),
+    }
+    sortField, sortAsc = sort_map.get(rank_type, ('dayvolume', False))
+
+    all_quotes = []
+    for exchange in ['TAI', 'TWO']:
+        try:
+            q = EquityQuery('eq', ['exchange', exchange])
+            result = yf.screen(q, sortField=sortField, sortAsc=sortAsc, size=300)
+            all_quotes.extend(result.get('quotes', []))
+        except Exception:
+            pass
+
+    # 過濾:只留 4 位數字代號的普通股
+    filtered = []
+    for q in all_quotes:
+        sym = q.get('symbol', '')
+        if sym.endswith('.TWO'):   code = sym[:-4]
+        elif sym.endswith('.TW'):  code = sym[:-3]
+        else:                      code = sym
+
+        price = float(q.get('regularMarketPrice', 0) or 0)
+        vol   = int(q.get('regularMarketVolume', 0) or 0)
+        chg   = float(q.get('regularMarketChangePercent', 0) or 0)
+
+        if (re.match(r'^\d{4}$', code)
+                and price >= min_price
+                and vol   >= min_vol
+                and abs(chg) <= 15.0):
+            filtered.append(q)
+
+    # 依排行類型排序
+    if rank_type == 'gain':
+        filtered.sort(
+            key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0),
+            reverse=True
+        )
+    elif rank_type == 'loss':
+        filtered.sort(
+            key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0)
+        )
+    else:
+        filtered.sort(
+            key=lambda x: int(x.get('regularMarketVolume', 0) or 0),
+            reverse=True
+        )
+
+    filtered = filtered[:size]
+
+    # 整理回傳格式
+    tickers   = [q['symbol'] for q in filtered]
+    meta_list = [
+        {
+            "symbol":    q['symbol'],
+            "name":      q.get('shortName','') or q.get('longName',''),
+            "price":     float(q.get('regularMarketPrice', 0) or 0),
+            "chg_pct":   float(q.get('regularMarketChangePercent', 0) or 0),
+            "volume":    int(q.get('regularMarketVolume', 0) or 0),
+        }
+        for q in filtered
+    ]
+
+    return tickers, meta_list
+
+
 TW_HOT_100 = [
     # ── 半導體龍頭 ──────────────────────────────────────────────────────
     "2330","2303","2454","2379","3034","6770","2344","3711","3533","2408",
@@ -1158,7 +1267,6 @@ TW_HOT_100 = [
 # ─────────────────────────────────────────────────────────────────────────────
 #  批量掃描引擎 (ThreadPoolExecutor 並行下載)
 # ─────────────────────────────────────────────────────────────────────────────
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def _scan_one(ticker: str, period: str) -> dict | None:
@@ -1430,12 +1538,22 @@ def render_sidebar():
             )
 
             scan_universe = st.selectbox(
-                "預設掃描清單", 
-                ["台灣熱門100檔", "台灣電子股759檔(全市場)", "僅自選股"],
+                "掃描清單來源",
+                [
+                    "📊 即時成交量排行 (今日最活躍)",
+                    "📈 即時漲幅排行 (今日強勢股)",
+                    "📉 即時跌幅排行 (今日弱勢/超跌)",
+                    "⭐ 台灣熱門100檔 (固定清單)",
+                    "🔬 台灣電子股759檔 (全市場)",
+                    "✏️ 僅自選股",
+                ],
                 index=0,
-                help="選擇要掃描的預設清單範圍"
+                help=(
+                    "即時排行: 每次掃描自動從 Yahoo Finance 抓取當日最新排行\n"
+                    "固定清單: 使用預設代號庫(離線可用)"
+                )
             )
-            use_hot100 = scan_universe != "僅自選股"
+            use_hot100 = scan_universe != "✏️ 僅自選股"
 
             min_wr = st.slider("最低勝率門檻 (%)", 0, 90, 70, step=5,
                                help="只顯示勝率大於此值的標的")
@@ -1689,18 +1807,44 @@ def main():
         # ── 組合掃描清單 ──────────────────────────────────────────────
         custom_tickers = []
         if custom_raw.strip():
-            # 支援逗號或換行分隔
             raw_list = custom_raw.replace(",", "\n").split("\n")
             custom_tickers = [t.strip().upper() for t in raw_list if t.strip()]
 
-        # 選擇預設清單
-        if scan_universe == "台灣電子股759檔(全市場)":
-            preset_list = TW_ELECTRONIC_759
-        elif scan_universe == "僅自選股":
-            preset_list = []
-        else:
-            preset_list = TW_HOT_100
+        # ── 選擇/抓取預設清單 ─────────────────────────────────────────
+        realtime_meta = []   # 即時排行的元資料(供顯示用)
+        is_realtime   = False
 
+        if "即時成交量排行" in scan_universe:
+            with st.spinner("⏳ 正在抓取 Yahoo Finance 今日成交量排行..."):
+                preset_list, realtime_meta = fetch_tw_realtime_hot('volume', 100)
+            is_realtime = True
+            rank_label  = "📊 今日成交量排行"
+
+        elif "即時漲幅排行" in scan_universe:
+            with st.spinner("⏳ 正在抓取 Yahoo Finance 今日漲幅排行..."):
+                preset_list, realtime_meta = fetch_tw_realtime_hot('gain', 100)
+            is_realtime = True
+            rank_label  = "📈 今日漲幅排行"
+
+        elif "即時跌幅排行" in scan_universe:
+            with st.spinner("⏳ 正在抓取 Yahoo Finance 今日跌幅排行..."):
+                preset_list, realtime_meta = fetch_tw_realtime_hot('loss', 100)
+            is_realtime = True
+            rank_label  = "📉 今日跌幅排行"
+
+        elif "電子股759" in scan_universe:
+            preset_list = TW_ELECTRONIC_759
+            rank_label  = "🔬 台灣電子股759檔"
+
+        elif "✏️" in scan_universe:
+            preset_list = []
+            rank_label  = "✏️ 僅自選股"
+
+        else:  # 熱門100檔
+            preset_list = TW_HOT_100
+            rank_label  = "⭐ 台灣熱門100檔"
+
+        # ── 合併自選股 + 預設清單 ────────────────────────────────────
         scan_list = []
         seen = set()
         for t in custom_tickers:
@@ -1713,13 +1857,53 @@ def main():
 
         total = len(scan_list)
 
+        # ── 即時排行預覽表 ───────────────────────────────────────────
+        if is_realtime and realtime_meta:
+            st.markdown(f'<div class="section-title">{rank_label} (共 {len(realtime_meta)} 檔)</div>',
+                        unsafe_allow_html=True)
+            st.markdown("""
+            <div style="font-size:13px;color:#4a6fa5;margin-bottom:10px;background:#eaf2fb;
+                        border-left:4px solid #1565c0;padding:8px 14px;border-radius:6px;">
+            ✅ 已從 Yahoo Finance 取得今日即時排行，以下為前20筆預覽，完整清單將進入 DNA 波浪掃描
+            </div>""", unsafe_allow_html=True)
+
+            # 排行預覽表
+            preview_html = """
+            <table class="fwd-table" style="font-size:13px;margin-bottom:16px;">
+            <thead><tr>
+              <th>#</th><th>代號</th><th>名稱</th>
+              <th>現價</th><th>漲跌幅</th><th>成交量</th>
+            </tr></thead><tbody>"""
+            for i, m in enumerate(realtime_meta[:20], 1):
+                sym   = m['symbol']
+                name  = TW_NAME_MAP.get(sym, m['name'][:16] if m['name'] else '--')
+                price = m['price']
+                chg   = m['chg_pct']
+                vol   = m['volume']
+                url   = get_chart_url(sym)
+                chg_color = "#0a7c59" if chg > 0 else "#c0392b" if chg < 0 else "#666"
+                row_bg = "background:#f7fafd;" if i%2==0 else ""
+                preview_html += f"""
+                <tr style="{row_bg}">
+                  <td style="color:#7a9bbf;">{i}</td>
+                  <td><a href="{url}" target="_blank"
+                      style="color:#1565c0;font-weight:700;font-family:'IBM Plex Mono',monospace;
+                             text-decoration:none;">{sym}</a></td>
+                  <td style="color:#1a2b3c;">{name}</td>
+                  <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;color:#1a2b3c;">{price:.2f}</td>
+                  <td style="color:{chg_color};font-weight:700;">{chg:+.2f}%</td>
+                  <td style="color:#4a6fa5;font-family:'IBM Plex Mono',monospace;">{vol:,}</td>
+                </tr>"""
+            preview_html += "</tbody></table>"
+            st.markdown(preview_html, unsafe_allow_html=True)
+
         # ── 掃描 UI ───────────────────────────────────────────────────
         st.markdown(f"""
         <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:#1a2b3c;
                     margin-bottom:12px;background:#eaf2fb;padding:10px 16px;border-radius:8px;
                     border-left:4px solid #1565c0;">
           📡 開始掃描 <b style="color:#1565c0;">{total}</b> 檔標的
-          (自選 {len(custom_tickers)} + 預設清單 {total - len(custom_tickers)})
+          (自選 {len(custom_tickers)} + {rank_label} {total - len(custom_tickers)})
           ── 勝率門檻 ≥ <b style="color:#0a7c59;">{min_wr}%</b>
         </div>
         """, unsafe_allow_html=True)
