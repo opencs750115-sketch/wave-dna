@@ -842,6 +842,153 @@ def generate_forward_matrix(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  台股名稱對照表 + 輔助工具
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 常用台股中文名稱對照 (代號 -> 中文簡稱)
+# 對照表未收錄的股票,會在執行時動態從 yfinance 取英文名稱作為 fallback
+TW_NAME_MAP = {
+    # 半導體/IC設計
+    "2330.TW":"台積電","2303.TW":"聯電","2454.TW":"聯發科","2379.TW":"瑞昱",
+    "3034.TW":"聯詠","2344.TW":"華邦電","3711.TW":"日月光投控","2408.TW":"南亞科",
+    "6770.TW":"力積電","3533.TW":"嘉澤","2337.TW":"旺宏","3231.TW":"緯創",
+    "3443.TW":"創意","6669.TW":"緯穎","2385.TW":"群光","2360.TW":"致茂",
+    "5274.TWO":"信驊","6274.TWO":"台燿","6488.TWO":"環球晶","3443.TWO":"創意",
+    # AI/伺服器/散熱
+    "2317.TW":"鴻海","3008.TW":"大立光","2357.TW":"華碩","2382.TW":"廣達",
+    "4919.TW":"新唐","6415.TW":"矽力-KY","8150.TW":"南茂",
+    # PCB/電路板
+    "2301.TW":"光寶科","3037.TW":"欣興","6153.TW":"嘉聯益","8046.TW":"南電",
+    "6269.TW":"台郡","3024.TW":"憶聲","2383.TW":"台光電","6456.TW":"GIS-KY",
+    "4961.TW":"天鈺","3706.TW":"神達","2404.TW":"漢唐","4919.TW":"新唐",
+    # 被動元件/電子材料
+    "2327.TW":"國巨","2354.TW":"鴻準","2376.TW":"技嘉","3019.TW":"亞泰",
+    "6789.TW":"采鈺","5483.TWO":"中美晶","6214.TW":"精誠","2439.TW":"美律",
+    # 網通/電信
+    "2412.TW":"中華電","3045.TW":"台灣大","4904.TW":"遠傳","2498.TW":"宏達電",
+    "3044.TW":"健鼎","4906.TW":"正文","5434.TW":"崇越","3026.TW":"禾伸堂",
+    "6488.TWO":"環球晶",
+    # 金融
+    "2882.TW":"國泰金","2881.TW":"富邦金","2886.TW":"兆豐金","2891.TW":"中信金",
+    "2884.TW":"玉山金","2885.TW":"元大金","2887.TW":"台新金","2892.TW":"第一金",
+    "2801.TW":"彰銀","5880.TW":"合庫金",
+    # 傳產/原物料
+    "1301.TW":"台塑","1303.TW":"南亞","1326.TW":"台化","2002.TW":"中鋼",
+    "9904.TW":"寶成","1101.TW":"台泥","1216.TW":"統一","1402.TW":"遠東新",
+    "2105.TW":"正新","1210.TW":"大成",
+    # 航運
+    "2603.TW":"長榮","2609.TW":"陽明","2615.TW":"萬海","2610.TW":"華航",
+    "5608.TW":"四維航","2617.TW":"台航","2618.TW":"長榮航","2606.TW":"裕民",
+    "2637.TW":"慧洋-KY","2634.TW":"漢翔",
+    # 光電/面板
+    "3481.TW":"群創","2409.TW":"友達","6409.TW":"旭隼","2449.TW":"京元電",
+    "3035.TW":"智原","2395.TW":"研華","5269.TW":"祥碩","3653.TW":"健策",
+    # 熱門電子股
+    "2356.TW":"英業達","2353.TW":"宏碁","2352.TW":"佳世達","2347.TW":"聯強",
+    "2345.TW":"智邦","2342.TW":"茂矽","2340.TW":"光磊","2332.TW":"台揚",
+    "2331.TW":"精英","2329.TW":"華泰","2328.TW":"廣宇","2324.TW":"仁寶",
+    "2323.TW":"中環","2321.TW":"東元","2316.TW":"楠梓電","2313.TW":"華通",
+    "2312.TW":"金寶","2308.TW":"台達電","2305.TW":"全友","2302.TW":"麗正",
+    "2362.TW":"藍天","2363.TW":"矽統","2364.TW":"倫飛","2365.TW":"昆盈",
+    "2367.TW":"燿華","2368.TW":"金像電","2369.TW":"菱生","2371.TW":"大同",
+    "2373.TW":"震旦行","2374.TW":"佳能","2375.TW":"智寶","2376.TW":"技嘉",
+    "2377.TW":"微星","2378.TW":"鈺創","2379.TW":"瑞昱","2381.TW":"華宇",
+    "2382.TW":"廣達","2383.TW":"台光電","2384.TW":"第一國際","2385.TW":"群光",
+    "2386.TW":"天剛","2387.TW":"精倫","2388.TW":"威盛","2389.TW":"啟訊",
+    "2390.TW":"云辰","2392.TW":"正崴","2393.TW":"億光","2395.TW":"研華",
+    "2396.TW":"精泉","2397.TW":"友通","2398.TW":"世界","2399.TW":"映泰",
+    "2401.TW":"凌陽","2402.TW":"毅嘉","2404.TW":"漢唐","2405.TW":"廣錠",
+    "2406.TW":"國碩","2408.TW":"南亞科","2409.TW":"友達","2412.TW":"中華電",
+    "2413.TW":"環科","2414.TW":"精技","2415.TW":"錩泰","2417.TW":"圓剛",
+    "2419.TW":"仲琦","2420.TW":"新巨","2421.TW":"建準","2423.TW":"固緯",
+    "2424.TW":"隴華","2425.TW":"承啟","2426.TW":"鼎元","2427.TW":"三商電",
+    "2428.TW":"興勤","2429.TW":"銘異","2430.TW":"燦坤","2431.TW":"聯昌",
+    "2432.TW":"倚強","2433.TW":"互動","2434.TW":"統一實","2436.TW":"偉詮電",
+    "2438.TW":"翔耀","2439.TW":"美律","2440.TW":"太空梭","2441.TW":"超豐",
+    "2442.TW":"新美齊","2444.TW":"兆赫","2449.TW":"京元電","2450.TW":"神腦",
+    "2451.TW":"創見","2453.TW":"凌群","2454.TW":"聯發科","2455.TW":"全新",
+    "2457.TW":"飛宏","2458.TW":"義隆","2459.TW":"敦吉","2460.TW":"建通",
+    "2461.TW":"光群雷","2462.TW":"白金","2464.TW":"盟立","2465.TW":"麗臺",
+    "2466.TW":"冠西電","2467.TW":"志聖","2468.TW":"華經","2471.TW":"資通",
+    "2472.TW":"立隆","2474.TW":"可成","2476.TW":"鉅祥","2477.TW":"美隆電",
+    "2478.TW":"大毅","2480.TW":"敦陽科","2481.TW":"強茂","2482.TW":"連宇",
+    "2483.TW":"百容","2484.TW":"希華","2485.TW":"兆赫","2486.TW":"一詮",
+    "2488.TW":"漢平","2489.TW":"瑞軒","2491.TW":"吉祥全","2492.TW":"華新科",
+    "2493.TW":"揚博","2495.TW":"普安","2496.TW":"卓越","2497.TW":"怡利電",
+    "2498.TW":"宏達電","3008.TW":"大立光","3014.TW":"聯陽","3017.TW":"奇鋐",
+    "3019.TW":"亞泰","3021.TW":"鴻名","3022.TW":"威強電","3023.TW":"信邦",
+    "3024.TW":"憶聲","3025.TW":"星通","3026.TW":"禾伸堂","3027.TW":"盛達",
+    "3029.TW":"零壹","3030.TW":"一零四","3031.TW":"佰研","3032.TW":"偉訓",
+    "3033.TW":"威健","3034.TW":"聯詠","3035.TW":"智原","3036.TW":"文曄",
+    "3037.TW":"欣興","3038.TW":"全台晶像","3041.TW":"揚智","3042.TW":"晶技",
+    "3043.TW":"科風","3044.TW":"健鼎","3045.TW":"台灣大","3046.TW":"建碁",
+    "3047.TW":"訊舟","3048.TW":"益登","3049.TW":"和鑫","3050.TW":"鈺德",
+    "3051.TW":"力特","3052.TW":"夆典","3054.TW":"立德電","3055.TW":"蘋果樹",
+    "3056.TW":"總太","3057.TW":"喬鼎","3058.TW":"立德","3059.TW":"華晶科",
+    "3060.TW":"銘異","3062.TW":"建漢","3085.TW":"比比昂","3086.TW":"華義",
+    "3090.TW":"日電貿","3092.TW":"鴻碩","3094.TW":"天亮醫療","3149.TW":"正達",
+    "3150.TW":"萬旭","3163.TWO":"波若威","3189.TW":"景碩","3191.TWO":"和進",
+    "3209.TWO":"全科","3211.TW":"盈正豫順","3213.TWO":"茂順","3231.TW":"緯創",
+    "3232.TW":"昱捷","3290.TW":"東成","3293.TW":"鈊象","3296.TW":"勝德",
+    "3305.TW":"昇貿","3311.TW":"閎康","3312.TW":"弘憶股","3374.TW":"精材",
+    "3376.TW":"新日興","3380.TW":"明泰","3382.TW":"瀛通","3388.TW":"崇越電",
+    "3406.TW":"玉晶光","3413.TW":"京鼎","3416.TW":"融程電","3419.TW":"譜瑞-KY",
+    "3432.TW":"台端","3437.TW":"榮創","3450.TW":"聯鈞","3466.TWO":"聚積",
+    "3481.TW":"群創","3515.TW":"華擎","3519.TW":"亦強","3529.TW":"力旺",
+    "3530.TW":"晶相光","3532.TW":"台勝科","3534.TW":"昱晶","3536.TWO":"祥富水電",
+    "3545.TW":"敦泰","3548.TW":"兆利","3550.TW":"台灣精銳","3551.TW":"世禾",
+    "3563.TW":"牧德","3576.TW":"新日光","3588.TW":"通嘉","3592.TW":"瑞鼎",
+    "3596.TW":"智易","3643.TW":"通泰","3661.TW":"世芯-KY","3665.TW":"貿聯-KY",
+    "3666.TW":"光洋科","3673.TW":"TPK-KY","3679.TW":"鑫禾","3691.TWO":"碩天",
+    "3693.TW":"營邦","3694.TW":"料仁科","3698.TW":"隆達","3701.TW":"大眾控",
+    "3702.TW":"大聯大","3703.TW":"欣陸","3704.TW":"合勤控","3705.TW":"永信",
+    "3706.TW":"神達","3707.TW":"漢磊","3708.TW":"上緯","3711.TW":"日月光投控",
+    "3714.TW":"富采","3715.TW":"定穎投控","3716.TW":"宸鴻","3722.TW":"同泰",
+    "3726.TW":"漢科","3727.TW":"彬台","3730.TW":"蔚華科","3733.TW":"雷科",
+    "3735.TW":"品安","3738.TW":"勝肯","3741.TW":"互動","3748.TW":"智旺",
+    "3749.TW":"北峰","3752.TW":"先鋒","3754.TW":"萬礦","3755.TW":"有量",
+    "3756.TW":"富樺","3757.TW":"金器","3758.TW":"為昇","3761.TW":"泰可",
+    "3762.TW":"臻鼎-KY","3763.TW":"鴻特","3764.TW":"辰展光電","3766.TW":"耕興",
+    "3769.TW":"洋華","3771.TW":"中探針","3779.TW":"晶采","3781.TW":"岳豐",
+    "3782.TW":"同霖","3785.TW":"H&G-KY","3786.TW":"科旭","3788.TW":"韋僑",
+    "3790.TW":"菱光","3791.TW":"揚聲","3792.TW":"惠特","3793.TW":"泰銘",
+    # 上櫃電子熱門
+    "6798.TWO":"展逸","6274.TWO":"台燿","5274.TWO":"信驊","6488.TWO":"環球晶",
+    "5483.TWO":"中美晶","4711.TWO":"永信藥","6547.TWO":"安博-KY","4174.TWO":"浩鼎",
+    "8299.TWO":"金麗科","6409.TW":"旭隼","8150.TW":"南茂",
+}
+
+def get_stock_name(ticker: str) -> str:
+    """
+    取得股票中文名稱(含代號)。
+    優先查對照表;查不到時嘗試從 yfinance 取英文 shortName 作 fallback。
+    """
+    name = TW_NAME_MAP.get(ticker, '')
+    if name:
+        return name
+    # Fallback: 取英文名(去掉冗長的法律後綴)
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        n = info.get('shortName','') or info.get('longName','')
+        # 清理常見英文後綴
+        for suffix in [' Inc.','Inc','CO., LTD.',' Co., Ltd.','Corp.',' Corporation',
+                       ' CORP',' INC',' CO LTD']:
+            n = n.replace(suffix,'').replace(suffix.upper(),'')
+        return n.strip() or ticker
+    except:
+        return ticker  # 最後 fallback 只顯示代號
+
+
+def get_chart_url(ticker: str) -> str:
+    """
+    生成 Yahoo Finance 台股技術分析頁面 URL。
+    格式: https://tw.stock.yahoo.com/quote/{代號}/technical-analysis
+    """
+    return f"https://tw.stock.yahoo.com/quote/{ticker}/technical-analysis"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  HTML 渲染工具
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1034,6 +1181,8 @@ def _scan_one(ticker: str, period: str) -> dict | None:
             last = df.iloc[-1]
             return {
                 "代號":       used,
+                "股名":       get_stock_name(used),          # ★ 中文股名
+                "chart_url":  get_chart_url(used),           # ★ Yahoo技術圖URL
                 "input":      ticker,
                 "收盤價":     round(float(last["Close"]), 2),
                 "勝率":       round(wr["winrate"] * 100, 1),
@@ -1099,22 +1248,14 @@ def run_batch_scan(tickers: list[str], period: str,
 
 def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
     """
-    批量掃描結果表格 ── 淺色系易讀版本。
-
-    顏色設計原則:
-      - 代號:  深藍 #1565c0 (強調,可點擊感)
-      - 股價:  深黑 #1a2b3c (最重要數字,最深)
-      - 勝率條: 深藍底 #1e3a5f + 顏色填充 (在白底上清晰)
-      - 分類:  色塊背景 (綠/橘/紅底+白字,一眼辨識)
-      - R_cycle: 橘色 #c05621 (警示色)
-      - 均線/KD: 深灰 #2d3748 (次要但可讀)
+    批量掃描結果表格。
+    ★ 新增: 股名欄 / 點擊代號開新分頁 / 📈按鈕彈出iframe技術線型視窗
     """
     filtered = [r for r in rows if r["勝率"] >= min_winrate]
     if not filtered:
         return ('<div style="color:#4a6fa5;font-family:\'Noto Sans TC\',sans-serif;'
                 'padding:24px;font-size:15px;">⚠️ 無符合條件的標的，請降低勝率門檻或調整清單</div>')
 
-    # 分類:色塊背景+白字
     cat_badge = {
         "top":  ('<span style="background:#0a7c59;color:#fff;padding:3px 10px;'
                  'border-radius:5px;font-size:13px;font-weight:700;">🚀 頂級</span>'),
@@ -1123,37 +1264,74 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
         "warn": ('<span style="background:#c0392b;color:#fff;padding:3px 10px;'
                  'border-radius:5px;font-size:13px;font-weight:700;">🛑 警戒</span>'),
     }
-    # 勝率橫條顏色
     bar_color = {"top": "#0a7c59", "mid": "#d97706", "warn": "#c0392b"}
+
+    # 彈出 iframe 視窗 JS (只生成一次)
+    modal_js = """
+    <div id="chartModal" onclick="if(event.target===this){this.style.display='none';
+         document.getElementById('chartFrame').src='';}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+         background:rgba(0,0,0,0.72);z-index:9999;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:14px;width:90%;max-width:1100px;
+                  height:82vh;overflow:hidden;position:relative;
+                  box-shadow:0 12px 48px rgba(0,0,0,0.45);">
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:12px 18px;background:#1565c0;color:#fff;">
+          <div>
+            <span id="modalTitle" style="font-family:\'Noto Sans TC\',sans-serif;
+                  font-size:16px;font-weight:700;"></span>
+            <span style="font-size:12px;opacity:.75;margin-left:10px;">
+              Yahoo Finance 技術分析</span>
+          </div>
+          <button onclick="document.getElementById(\'chartModal\').style.display=\'none\';
+                           document.getElementById(\'chartFrame\').src=\'\';event.stopPropagation();"
+                  style="background:rgba(255,255,255,.2);border:none;color:#fff;
+                         font-size:18px;cursor:pointer;border-radius:6px;
+                         padding:4px 10px;line-height:1;">✕ 關閉</button>
+        </div>
+        <iframe id="chartFrame" src="" style="width:100%;height:calc(82vh - 52px);border:none;"></iframe>
+      </div>
+    </div>
+    <script>
+    function openChart(url, title) {
+        document.getElementById(\'chartFrame\').src = url;
+        document.getElementById(\'modalTitle\').textContent = title;
+        document.getElementById(\'chartModal\').style.display = \'flex\';
+    }
+    </script>"""
 
     head = """
     <table class="fwd-table" style="font-size:14px;width:100%;">
       <thead>
         <tr>
-          <th style="width:36px;">#</th>
-          <th style="width:110px;">代號</th>
-          <th style="width:80px;">收盤價</th>
-          <th style="width:160px;">波段勝率</th>
-          <th style="width:80px;">分類</th>
-          <th style="width:80px;">R_cycle</th>
-          <th style="width:80px;">修正基準</th>
-          <th style="width:80px;">拉回天數</th>
+          <th style="width:32px;">#</th>
+          <th style="min-width:90px;">代號</th>
+          <th style="min-width:80px;">股名</th>
+          <th style="width:78px;">收盤價</th>
+          <th style="width:155px;">波段勝率</th>
+          <th style="width:72px;">分類</th>
+          <th style="width:72px;">R_cycle</th>
+          <th style="width:68px;">修正基準</th>
+          <th style="width:68px;">拉回天數</th>
           <th>均線型態</th>
-          <th>KD 狀態</th>
+          <th>KD狀態</th>
+          <th style="width:42px;">線型</th>
         </tr>
       </thead><tbody>"""
 
     body = ""
     for i, r in enumerate(filtered, 1):
-        cat  = r["category"]
-        wr   = r["勝率"]
-        bc   = bar_color.get(cat, "#1565c0")
+        cat   = r["category"]
+        wr    = r["勝率"]
+        bc    = bar_color.get(cat, "#1565c0")
         badge = cat_badge.get(cat, r["分類"])
+        code  = r["代號"]
+        name  = r.get("股名", "")
+        url   = r.get("chart_url", get_chart_url(code))
+        title_str = f"{name} ({code})" if name else code
 
-        # 斑馬紋底色
         row_bg = "background:#f7fafd;" if i % 2 == 0 else "background:#ffffff;"
 
-        # 勝率橫條:深藍底色讓進度條在白底上清晰可見
         bar = (f'<div style="display:flex;align-items:center;gap:8px;">'
                f'<div style="width:70px;background:#c8d8e8;border-radius:4px;'
                f'height:10px;flex-shrink:0;overflow:hidden;">'
@@ -1163,15 +1341,29 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
                f'font-family:\'IBM Plex Mono\',monospace;">{wr:.1f}%</span>'
                f'</div>')
 
-        # R_cycle 顏色:>1.0 綠,0.6~1.0 橘,<0.6 紅
         rc = r["R_cycle"]
         rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+
+        # 安全轉義title中的單引號
+        safe_title = title_str.replace("'", " ").replace('"', ' ')
+        safe_url   = url.replace("'", "%27")
+
+        code_link = (f'<a href="{url}" target="_blank" '
+                     f'style="color:#1565c0;font-weight:700;font-size:14px;'
+                     f'font-family:\'IBM Plex Mono\',monospace;text-decoration:none;">' 
+                     f'{code}</a>')
+        name_html = (f'<span style="color:#1a2b3c;font-size:13px;">{name}</span>'
+                     if name else
+                     f'<span style="color:#b0bec5;font-size:12px;">--</span>')
+        chart_btn = (f'<button onclick="openChart(\'{safe_url}\',\'{safe_title}\')" '
+                     f'style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:6px;'
+                     f'padding:3px 8px;cursor:pointer;font-size:14px;color:#1565c0;">📈</button>')
 
         body += f"""
         <tr style="{row_bg}">
           <td style="color:#7a9bbf;font-size:13px;text-align:center;">{i}</td>
-          <td style="color:#1565c0;font-weight:700;font-size:15px;
-                     font-family:'IBM Plex Mono',monospace;">{r['代號']}</td>
+          <td>{code_link}</td>
+          <td>{name_html}</td>
           <td style="color:#1a2b3c;font-weight:700;font-size:15px;
                      font-family:'IBM Plex Mono',monospace;">{r['收盤價']}</td>
           <td>{bar}</td>
@@ -1184,9 +1376,11 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
                      font-family:'IBM Plex Mono',monospace;">{r['D_current']} 天</td>
           <td style="color:#2d3748;font-size:13px;">{r['均線型態'][:22]}</td>
           <td style="color:#2d3748;font-size:13px;">{r['KD狀態'][:22]}</td>
+          <td style="text-align:center;">{chart_btn}</td>
         </tr>"""
 
-    return head + body + "</tbody></table>"
+    return modal_js + head + body + "</tbody></table>"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
