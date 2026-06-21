@@ -899,6 +899,92 @@ def html_forward_table(rows: list[dict], last_close: float) -> str:
 #  台灣熱門 100 檔預設清單
 #  分類: 半導體 / AI供應鏈 / 電子零組件 / 面板 / 金融 / 傳產 / 航運 / 生技 / 其他
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  台灣電子股 759 檔預驗證清單 (已過濾無效/已下市代號)
+#  涵蓋上市(TW)與上櫃(TWO) 電子股,共 759 檔
+#  代號範圍: 2300~2499(半導體/電子), 3000~3799(電子零組件),
+#             4900~4999(通信), 6000~6999(電子六), 8000~8300(電子八)
+# ─────────────────────────────────────────────────────────────────────────────
+TW_ELECTRONIC_759 = [
+    "2301.TW","2302.TW","2303.TW","2305.TW","2308.TW","2312.TW","2313.TW","2314.TW","2316.TW","2317.TW",
+    "2321.TW","2323.TW","2324.TW","2327.TW","2328.TW","2329.TW","2330.TW","2331.TW","2332.TW","2337.TW",
+    "2338.TW","2340.TW","2342.TW","2344.TW","2345.TW","2347.TW","2348.TW","2349.TW","2351.TW","2352.TW",
+    "2353.TW","2354.TW","2355.TW","2356.TW","2357.TW","2359.TW","2360.TW","2362.TW","2363.TW","2364.TW",
+    "2365.TW","2367.TW","2368.TW","2369.TW","2371.TW","2373.TW","2374.TW","2375.TW","2376.TW","2377.TW",
+    "2379.TW","2380.TW","2382.TW","2383.TW","2385.TW","2387.TW","2388.TW","2390.TW","2392.TW","2393.TW",
+    "2395.TW","2397.TW","2399.TW","2401.TW","2402.TW","2404.TW","2405.TW","2406.TW","2408.TW","2409.TW",
+    "2412.TW","2413.TW","2414.TW","2415.TW","2417.TW","2419.TW","2420.TW","2421.TW","2423.TW","2424.TW",
+    "2425.TW","2426.TW","2427.TW","2428.TW","2429.TW","2430.TW","2431.TW","2432.TW","2433.TW","2434.TW",
+    "2436.TW","2438.TW","2439.TW","2440.TW","2441.TW","2442.TW","2444.TW","2449.TW","2450.TW","2451.TW",
+    "2453.TW","2454.TW","2455.TW","2457.TW","2458.TW","2459.TW","2460.TW","2461.TW","2462.TW","2464.TW",
+    "2465.TW","2466.TW","2467.TW","2468.TW","2471.TW","2472.TW","2474.TW","2476.TW","2477.TW","2478.TW",
+    "2480.TW","2481.TW","2482.TW","2483.TW","2484.TW","2485.TW","2486.TW","2488.TW","2489.TW","2491.TW",
+    "2492.TW","2493.TW","2495.TW","2496.TW","2497.TW","2498.TW","3002.TW","3003.TW","3004.TW","3005.TW",
+    "3006.TW","3008.TW","3010.TW","3011.TW","3013.TW","3014.TW","3015.TW","3016.TW","3017.TW","3018.TW",
+    "3019.TW","3021.TW","3022.TW","3023.TW","3024.TW","3025.TW","3026.TW","3027.TW","3028.TW","3029.TW",
+    "3030.TW","3031.TW","3032.TW","3033.TW","3034.TW","3035.TW","3036.TW","3037.TW","3038.TW","3040.TW",
+    "3041.TW","3042.TW","3043.TW","3044.TW","3045.TW","3046.TW","3047.TW","3048.TW","3049.TW","3050.TW",
+    "3051.TW","3052.TW","3054.TW","3055.TW","3056.TW","3057.TW","3058.TW","3059.TW","3060.TW","3062.TW",
+    "3073.TWO","3078.TWO","3081.TWO","3083.TWO","3085.TWO","3086.TWO","3088.TWO","3090.TW","3092.TW","3094.TW",
+    "3095.TWO","3118.TWO","3122.TWO","3130.TW","3131.TWO","3135.TW","3138.TW","3141.TWO","3149.TW","3150.TW",
+    "3152.TWO","3164.TW","3167.TW","3168.TW","3188.TWO","3189.TW","3191.TWO","3205.TWO","3206.TWO","3207.TWO",
+    "3209.TW","3213.TWO","3217.TWO","3218.TWO","3219.TWO","3224.TWO","3227.TWO","3229.TW","3231.TW","3232.TWO",
+    "3234.TWO","3236.TWO","3252.TWO","3257.TW","3259.TWO","3266.TW","3288.TWO","3293.TWO","3294.TWO","3296.TW",
+    "3305.TW","3308.TW","3310.TWO","3311.TW","3312.TW","3321.TW","3325.TWO","3332.TWO","3338.TW","3346.TW",
+    "3349.TWO","3356.TW","3360.TWO","3373.TWO","3374.TWO","3376.TW","3379.TWO","3380.TW","3388.TWO","3406.TW",
+    "3413.TW","3416.TW","3419.TW","3426.TWO","3430.TWO","3432.TW","3437.TW","3443.TW","3444.TWO","3447.TW",
+    "3450.TW","3455.TWO","3465.TWO","3467.TWO","3481.TW","3484.TWO","3494.TW","3499.TWO","3501.TW","3504.TW",
+    "3515.TW","3518.TW","3521.TWO","3522.TWO","3526.TWO","3527.TWO","3528.TW","3530.TW","3531.TWO","3532.TW",
+    "3533.TW","3535.TW","3543.TW","3545.TW","3550.TW","3556.TWO","3557.TW","3563.TW","3564.TWO","3576.TW",
+    "3581.TWO","3583.TW","3587.TWO","3588.TW","3591.TW","3592.TW","3593.TW","3596.TW","3603.TWO","3605.TW",
+    "3607.TW","3609.TWO","3615.TWO","3617.TW","3622.TW","3628.TWO","3629.TWO","3631.TWO","3633.TWO","3645.TW",
+    "3652.TW","3653.TW","3659.TWO","3661.TW","3663.TWO","3664.TWO","3665.TW","3669.TW","3672.TWO","3673.TW",
+    "3679.TW","3680.TWO","3686.TW","3687.TWO","3691.TWO","3694.TW","3701.TW","3702.TW","3703.TW","3704.TW",
+    "3705.TW","3706.TW","3708.TW","3711.TW","3712.TW","3714.TW","3715.TW","3716.TW","3717.TW","4903.TWO",
+    "4904.TW","4905.TWO","4906.TW","4907.TWO","4908.TWO","4909.TWO","4912.TW","4915.TW","4916.TW","4919.TW",
+    "4927.TW","4930.TW","4934.TW","4935.TW","4938.TW","4939.TWO","4942.TW","4943.TW","4949.TW","4952.TW",
+    "4956.TW","4958.TW","4960.TW","4961.TW","4966.TWO","4967.TW","4968.TW","4972.TWO","4974.TWO","4976.TW",
+    "4977.TW","4989.TW","4994.TW","4999.TW","5201.TWO","5202.TWO","5205.TWO","5206.TWO","5209.TWO","5210.TWO",
+    "5212.TWO","5223.TWO","5246.TWO","5248.TWO","5251.TWO","5254.TWO","5263.TWO","5267.TWO","5271.TWO","5272.TWO",
+    "5274.TWO","5276.TWO","5278.TWO","5289.TWO","5297.TWO","5309.TWO","5310.TWO","5312.TWO","5314.TWO","5315.TWO",
+    "5321.TWO","5324.TWO","5340.TWO","5344.TWO","5364.TWO","5371.TWO","5392.TWO","5403.TWO","5410.TWO","5426.TWO",
+    "5450.TWO","5452.TWO","5455.TWO","5457.TWO","5460.TWO","5464.TWO","5465.TWO","5475.TWO","5483.TWO","5487.TWO",
+    "5536.TWO","5548.TWO","6005.TW","6015.TWO","6024.TW","6028.TWO","6101.TWO","6103.TWO","6104.TWO","6108.TW",
+    "6112.TW","6115.TW","6116.TW","6117.TW","6118.TWO","6120.TW","6128.TW","6133.TW","6136.TW","6139.TW",
+    "6141.TW","6142.TW","6147.TWO","6152.TW","6153.TW","6155.TW","6164.TW","6165.TW","6166.TW","6167.TWO",
+    "6168.TW","6171.TWO","6176.TW","6177.TW","6183.TW","6184.TW","6186.TWO","6187.TWO","6188.TWO","6189.TW",
+    "6190.TWO","6191.TW","6192.TW","6194.TWO","6195.TWO","6196.TW","6197.TW","6198.TWO","6199.TWO","6201.TW",
+    "6202.TW","6205.TW","6206.TW","6209.TW","6210.TWO","6213.TW","6214.TW","6215.TW","6216.TW","6220.TWO",
+    "6223.TWO","6224.TW","6225.TW","6226.TW","6227.TWO","6228.TWO","6230.TW","6235.TW","6239.TW","6240.TWO",
+    "6243.TW","6257.TW","6269.TW","6270.TWO","6271.TW","6272.TW","6274.TWO","6277.TW","6278.TW","6281.TW",
+    "6282.TW","6283.TW","6285.TW","6294.TWO","6405.TW","6407.TWO","6409.TW","6412.TW","6414.TW","6415.TW",
+    "6416.TW","6417.TWO","6418.TWO","6419.TWO","6423.TWO","6425.TWO","6426.TW","6428.TWO","6431.TW","6432.TWO",
+    "6438.TW","6442.TW","6443.TW","6446.TW","6449.TW","6451.TW","6456.TW","6461.TWO","6462.TWO","6464.TW",
+    "6467.TWO","6472.TW","6474.TWO","6477.TW","6482.TWO","6483.TWO","6485.TWO","6486.TWO","6488.TWO","6491.TW",
+    "6492.TWO","6494.TWO","6504.TW","6505.TW","6509.TWO","6515.TW","6525.TW","6526.TW","6531.TW","6533.TW",
+    "6534.TW","6541.TW","6547.TWO","6550.TW","6552.TW","6555.TWO","6558.TW","6568.TWO","6573.TW","6574.TWO",
+    "6576.TWO","6579.TW","6581.TW","6582.TW","6583.TWO","6584.TWO","6585.TW","6586.TWO","6588.TWO","6589.TW",
+    "6591.TW","6592.TW","6593.TWO","6595.TWO","6598.TW","6605.TW","6606.TW","6610.TWO","6612.TWO","6613.TWO",
+    "6614.TW","6615.TWO","6616.TWO","6617.TWO","6625.TW","6638.TWO","6640.TWO","6641.TW","6642.TWO","6643.TWO",
+    "6645.TW","6648.TWO","6649.TWO","6654.TWO","6655.TW","6657.TW","6658.TW","6659.TWO","6661.TWO","6664.TWO",
+    "6666.TW","6668.TW","6669.TW","6670.TW","6671.TW","6672.TW","6673.TWO","6674.TW","6683.TWO","6684.TWO",
+    "6689.TW","6690.TWO","6691.TW","6693.TWO","6695.TW","6696.TWO","6697.TWO","6698.TW","6706.TW","6715.TW",
+    "6719.TW","6722.TW","6727.TWO","6728.TWO","6730.TWO","6733.TWO","6739.TWO","6742.TW","6743.TW","6744.TWO",
+    "6750.TWO","6751.TWO","6752.TWO","6753.TW","6754.TW","6755.TWO","6756.TW","6757.TW","6758.TWO","6768.TW",
+    "6770.TW","6771.TW","6775.TWO","6776.TW","6781.TW","6782.TW","6785.TWO","6789.TW","6790.TW","6791.TWO",
+    "6792.TW","6794.TW","6796.TW","6797.TWO","6798.TWO","6799.TW","6805.TW","6806.TW","6807.TW","6830.TW",
+    "6831.TW","6834.TW","6835.TW","6838.TW","6854.TW","6861.TW","6862.TW","6863.TW","6869.TW","6873.TW",
+    "6885.TW","6887.TW","6890.TW","6901.TW","6902.TW","6906.TW","6908.TW","6909.TW","6914.TW","6916.TW",
+    "6918.TW","6919.TW","6921.TW","6923.TW","6924.TW","6928.TW","6931.TW","6933.TW","6934.TW","6936.TW",
+    "6937.TW","6944.TW","6949.TW","6951.TW","6952.TW","6955.TW","6957.TW","6958.TW","6962.TW","6965.TW",
+    "6969.TW","6988.TW","6994.TW","8011.TW","8016.TW","8021.TW","8028.TW","8033.TW","8039.TW","8042.TWO",
+    "8045.TW","8046.TW","8047.TWO","8058.TWO","8059.TWO","8064.TWO","8066.TWO","8067.TWO","8068.TWO","8070.TW",
+    "8071.TWO","8080.TWO","8081.TW","8084.TWO","8085.TWO","8086.TWO","8087.TWO","8088.TWO","8089.TWO","8091.TWO",
+    "8093.TWO","8098.TWO","8101.TW","8107.TWO","8112.TW","8131.TW","8147.TWO","8150.TW","8155.TWO","8183.TWO",
+    "8201.TW","8210.TW","8213.TW","8249.TW","8261.TW","8271.TW","8272.TWO","8277.TWO","8284.TWO",
+]
+
+
 TW_HOT_100 = [
     # ── 半導體龍頭 ──────────────────────────────────────────────────────
     "2330","2303","2454","2379","3034","6770","2344","3711","3533","2408",
@@ -932,36 +1018,48 @@ def _scan_one(ticker: str, period: str) -> dict | None:
     """
     掃描單一股票,回傳精簡結果 dict;若資料取得失敗回傳 None。
     此函式會被 ThreadPoolExecutor 並行呼叫。
+
+    ★ Rate Limit 處理: Yahoo Finance 在短時間大量請求時會回傳 429。
+      遇到限速錯誤時自動等待 2 秒後最多重試 3 次,超過則跳過。
     """
-    try:
-        df, used = fetch_data(ticker, period=period)
-        if df is None or len(df) < 60:
+    import time as _time
+    for attempt in range(3):
+        try:
+            df, used = fetch_data(ticker, period=period)
+            if df is None or len(df) < 60:
+                return None
+            df  = add_indicators(df)
+            dna = detect_wave_dna(df)
+            wr  = compute_winrate(dna, df)
+            last = df.iloc[-1]
+            return {
+                "代號":       used,
+                "input":      ticker,
+                "收盤價":     round(float(last["Close"]), 2),
+                "勝率":       round(wr["winrate"] * 100, 1),
+                "分類":       wr["category_label"],
+                "category":   wr["category"],
+                "R_cycle":    dna["R_cycle"],
+                "T_median":   dna["T_median"],
+                "D_current":  dna["D_current"],
+                "均線型態":   wr["desc_ma"],
+                "KD狀態":     wr["desc_kd"],
+                "時間波":     wr["desc_time"],
+                "K9":         wr["k9"],
+                "D9":         wr["d9"],
+                "量比":       wr["vol_ratio"],
+                "days_trough": dna.get("days_since_trough", -1),
+                "corr_end":   dna.get("correction_end_date"),
+            }
+        except Exception as e:
+            err_str = str(e).lower()
+            # Rate limit: 等待後重試
+            if "rate" in err_str or "429" in err_str or "too many" in err_str:
+                if attempt < 2:
+                    _time.sleep(2 + attempt * 2)  # 2s / 4s 遞增等待
+                    continue
             return None
-        df  = add_indicators(df)
-        dna = detect_wave_dna(df)
-        wr  = compute_winrate(dna, df)
-        last = df.iloc[-1]
-        return {
-            "代號":       used,
-            "input":      ticker,         # 原始輸入(用於點擊展開)
-            "收盤價":     round(float(last["Close"]), 2),
-            "勝率":       round(wr["winrate"] * 100, 1),
-            "分類":       wr["category_label"],
-            "category":   wr["category"],
-            "R_cycle":    dna["R_cycle"],
-            "T_median":   dna["T_median"],
-            "D_current":  dna["D_current"],
-            "均線型態":   wr["desc_ma"],
-            "KD狀態":     wr["desc_kd"],
-            "時間波":     wr["desc_time"],
-            "K9":         wr["k9"],
-            "D9":         wr["d9"],
-            "量比":       wr["vol_ratio"],
-            "days_trough": dna.get("days_since_trough", -1),
-            "corr_end":   dna.get("correction_end_date"),
-        }
-    except Exception:
-        return None
+    return None
 
 
 def run_batch_scan(tickers: list[str], period: str,
@@ -1137,8 +1235,13 @@ def render_sidebar():
                 help="留空則使用台灣熱門100檔；填入代號後,自選股會優先列在掃描清單最前面"
             )
 
-            use_hot100 = st.checkbox("合併台灣熱門100檔", value=True,
-                                      help="勾選後自選股 + 熱門100檔一起掃描")
+            scan_universe = st.selectbox(
+                "預設掃描清單", 
+                ["台灣熱門100檔", "台灣電子股759檔(全市場)", "僅自選股"],
+                index=0,
+                help="選擇要掃描的預設清單範圍"
+            )
+            use_hot100 = scan_universe != "僅自選股"
 
             min_wr = st.slider("最低勝率門檻 (%)", 0, 90, 70, step=5,
                                help="只顯示勝率大於此值的標的")
@@ -1171,7 +1274,8 @@ def render_sidebar():
         """, unsafe_allow_html=True)
 
     return (ticker.strip(), period, top_n, analyze,
-            scan, custom_raw, min_wr, use_hot100, mode)
+            scan, custom_raw, min_wr, use_hot100, mode,
+            locals().get('scan_universe', '台灣熱門100檔'))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1349,7 +1453,7 @@ def render_forward_table(rows: list[dict], last_close: float):
 
 def main():
     (ticker_raw, period, top_n, analyze,
-     scan, custom_raw, min_wr, use_hot100, mode) = render_sidebar()
+     scan, custom_raw, min_wr, use_hot100, mode, scan_universe) = render_sidebar()
 
     # 頁面標題
     st.markdown("""
@@ -1395,13 +1499,21 @@ def main():
             raw_list = custom_raw.replace(",", "\n").split("\n")
             custom_tickers = [t.strip().upper() for t in raw_list if t.strip()]
 
+        # 選擇預設清單
+        if scan_universe == "台灣電子股759檔(全市場)":
+            preset_list = TW_ELECTRONIC_759
+        elif scan_universe == "僅自選股":
+            preset_list = []
+        else:
+            preset_list = TW_HOT_100
+
         scan_list = []
         seen = set()
         for t in custom_tickers:
             if t not in seen:
                 scan_list.append(t); seen.add(t)
         if use_hot100:
-            for t in TW_HOT_100:
+            for t in preset_list:
                 if t not in seen:
                     scan_list.append(t); seen.add(t)
 
@@ -1413,7 +1525,7 @@ def main():
                     margin-bottom:12px;background:#eaf2fb;padding:10px 16px;border-radius:8px;
                     border-left:4px solid #1565c0;">
           📡 開始掃描 <b style="color:#1565c0;">{total}</b> 檔標的
-          (自選 {len(custom_tickers)} + 熱門 {total - len(custom_tickers)})
+          (自選 {len(custom_tickers)} + 預設清單 {total - len(custom_tickers)})
           ── 勝率門檻 ≥ <b style="color:#0a7c59;">{min_wr}%</b>
         </div>
         """, unsafe_allow_html=True)
