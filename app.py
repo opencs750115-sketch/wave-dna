@@ -248,6 +248,130 @@ p, label, div, span { color: #1a2b3c; }
     font-weight: 700 !important;
 }
 [data-testid="stMetricDelta"] { font-size: 13px !important; }
+
+/* ── 手機響應式 ─────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    /* 側邊欄在手機預設收起 */
+    [data-testid="stSidebar"] { min-width: 0 !important; }
+
+    /* 主內容全寬 */
+    .main .block-container { padding: 8px 10px 20px !important; max-width: 100% !important; }
+
+    /* 頁面標題縮小 */
+    h1 { font-size: 18px !important; }
+
+    /* metric 欄位在手機單欄排列 */
+    [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: 8px !important; }
+    [data-testid="metric-container"] {
+        min-width: 140px !important;
+        padding: 10px 12px !important;
+    }
+    [data-testid="stMetricValue"] { font-size: 18px !important; }
+
+    /* 掃描結果表格在手機改為卡片式 */
+    .fwd-table { display: none !important; }
+    .mobile-cards { display: block !important; }
+
+    /* 卡片列間距 */
+    .dna-card { padding: 12px 14px !important; margin-bottom: 10px !important; }
+    .dna-card .val { font-size: 22px !important; }
+    .bar-wrap { height: 10px !important; }
+}
+
+/* 桌機隱藏卡片式、顯示表格式 */
+@media (min-width: 769px) {
+    .mobile-cards { display: none !important; }
+    .fwd-table { display: table !important; }
+}
+
+/* ── 手機掃描結果卡片 ─────────────────────────────────────────── */
+.scan-card {
+    background: #ffffff;
+    border: 1.5px solid #c8d8e8;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    box-shadow: 0 2px 8px rgba(21,101,192,0.07);
+}
+.scan-card .sc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.scan-card .sc-code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1565c0;
+    text-decoration: none;
+}
+.scan-card .sc-name {
+    font-size: 15px;
+    color: #1a2b3c;
+    font-weight: 500;
+}
+.scan-card .sc-badge {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+.scan-card .sc-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+}
+.scan-card .sc-price {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1a2b3c;
+}
+.scan-card .sc-wr {
+    font-size: 18px;
+    font-weight: 700;
+}
+.scan-card .sc-bar-wrap {
+    height: 8px;
+    background: #c8d8e8;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 6px 0;
+}
+.scan-card .sc-bar-fill {
+    height: 8px;
+    border-radius: 999px;
+}
+.scan-card .sc-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    color: #4a6fa5;
+    font-family: 'IBM Plex Mono', monospace;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+.scan-card .sc-desc {
+    font-size: 12px;
+    color: #2d3748;
+    margin-top: 6px;
+    line-height: 1.5;
+    border-top: 1px solid #eaf2fb;
+    padding-top: 6px;
+}
+.scan-card .sc-btn {
+    background: #eaf2fb;
+    border: 1px solid #b8cce0;
+    border-radius: 6px;
+    padding: 4px 10px;
+    color: #1565c0;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -965,6 +1089,29 @@ TW_NAME_MAP = {
     "6798.TWO":"展逸","6274.TWO":"台燿","5274.TWO":"信驊","6488.TWO":"環球晶",
     "5483.TWO":"中美晶","4711.TWO":"永信藥","6547.TWO":"安博-KY","4174.TWO":"浩鼎",
     "8299.TWO":"金麗科","6409.TW":"旭隼","8150.TW":"南茂",
+    # ── 成交量排行常見股票補充(截圖中出現的英文名) ──────────────────
+    "3481.TW":"群創","2409.TW":"友達","6116.TW":"彩晶","2002.TW":"中鋼",
+    "2344.TW":"華邦電","2303.TW":"聯電","6770.TW":"力積電","1301.TW":"台塑",
+    "2408.TW":"南亞科","2890.TW":"永豐金","1303.TW":"南亞","2883.TW":"開發金",
+    "2337.TW":"旺宏","1802.TW":"台玻","6182.TWO":"環球晶","2887.TW":"台新金",
+    "2884.TW":"玉山金","2610.TW":"華航","2327.TW":"國巨","2892.TW":"第一金",
+    "2886.TW":"兆豐金","2324.TW":"仁寶","2317.TW":"鴻海","2492.TW":"華新科",
+    "2880.TW":"華南金","2618.TW":"長榮航","6239.TW":"力成","1605.TW":"華新",
+    "2891.TW":"中信金","2882.TW":"國泰金","2881.TW":"富邦金","2885.TW":"元大金",
+    "2603.TW":"長榮","2609.TW":"陽明","2615.TW":"萬海","5880.TW":"合庫金",
+    # ── 漲跌幅排行常見股票補充 ────────────────────────────────────────
+    "5297.TWO":"三星科技","6586.TWO":"豐藝","6603.TWO":"富鴻網","6432.TWO":"亞信",
+    "6919.TW":"凱萊英","6259.TWO":"百威達","4741.TWO":"亞朋","1409.TW":"新纖",
+    "2399.TW":"映泰","3576.TW":"聯合再生","5230.TWO":"友鴻","2605.TW":"新興",
+    "2472.TW":"立隆","2483.TW":"百容","2449.TW":"京元電","2406.TW":"國碩",
+    # ── 上櫃熱門補充 ──────────────────────────────────────────────────
+    "5328.TWO":"聯發","3105.TWO":"穩懋","8043.TWO":"瞬曜","6207.TWO":"雷科",
+    "6175.TWO":"立積","5351.TWO":"鈺創","6147.TWO":"頎邦","3236.TWO":"千如",
+    "1815.TWO":"富喬","3707.TWO":"漢磊","8088.TWO":"品安","5347.TWO":"世界",
+    "1785.TWO":"光洋科","5425.TWO":"台半","8064.TWO":"歐特邁","6548.TWO":"長華電材",
+    "3264.TWO":"欣銓","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
+    "3537.TWO":"堡達","3317.TWO":"金洋科","8069.TWO":"元太","6244.TWO":"茂迪",
+    "3663.TWO":"鐿鈦","3357.TWO":"台灣彩光","8096.TWO":"擎亞",
 }
 
 def get_stock_name(ticker: str) -> str:
@@ -1154,10 +1301,6 @@ TW_ELECTRONIC_759 = [
 #  即時台灣熱門排行函式 (每次掃描前動態抓取,非靜態清單)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  即時台灣熱門排行函式 (每次掃描前動態抓取,非靜態清單)
-# ─────────────────────────────────────────────────────────────────────────────
-
 # 全域即時名稱快取(從screener結果補充TW_NAME_MAP沒有的英文名)
 _REALTIME_NAME_CACHE: dict[str, str] = {}
 
@@ -1166,48 +1309,44 @@ def fetch_tw_realtime_hot(
     rank_type: str = 'volume',
     size: int = 100,
     min_price: float = 5.0,
-    min_vol: int = 1_000_000,
+    min_vol: int = 500_000,
 ) -> tuple[list[str], list[dict]]:
     """
-    即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行股票代號。
+    即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行。
 
-    ★ 修正: size 從 300 改為 240(Yahoo Finance API 上限為 250)
-    ★ 新增: 把 screener 回傳的 shortName 注入 _REALTIME_NAME_CACHE,
-             讓後續 get_stock_name() 能用到更準確的名稱,減少顯示原始代號的問題
+    ★ 修正 A — 漲跌幅排行問題:
+      改用「一律先依 dayvolume 抓 240 筆 → 過濾掉非4位代號 → 再依目標排序」。
+      原本直接用 percentchange 排序時,前240筆全是認股權(漲幅300~900%),
+      真正的股票全被擠到後面,導致過濾後0筆。
+
+    ★ 修正 B — min_vol 從 100萬 降至 50萬:
+      讓中小型股也能被納入漲跌幅排行(成交量100萬以上的台股並不多)。
 
     rank_type:
       'volume'  — 今日成交量最大(量能最強)
       'gain'    — 今日漲幅最大(強勢股)
       'loss'    — 今日跌幅最大(弱勢/超跌反彈)
 
-    過濾條件(避免認股權證、期貨等混入):
-      - 代號必須是純 4 位數字 (排除 6~7 位的認股權/選擇權)
+    過濾條件:
+      - 代號必須是純 4 位數字 (排除認股權6位/選擇權7位)
       - 股價 >= min_price 元
       - 成交量 >= min_vol 股
-      - 漲跌幅絕對值 <= 15%
     """
     global _REALTIME_NAME_CACHE
 
     if not _EQUITY_QUERY_AVAILABLE:
         return [], []
 
-    sort_map = {
-        'volume': ('dayvolume', False),
-        'gain':   ('percentchange', False),
-        'loss':   ('percentchange', True),
-    }
-    sortField, sortAsc = sort_map.get(rank_type, ('dayvolume', False))
-
     all_quotes = []
     for exchange in ['TAI', 'TWO']:
         try:
             q = EquityQuery('eq', ['exchange', exchange])
-            # ★ size=240 (Yahoo上限=250,留緩衝避免報錯)
-            result = yf.screen(q, sortField=sortField, sortAsc=sortAsc, size=240)
+            # ★ 一律先依成交量排序取 240 筆(Yahoo API 上限),確保取到足夠多的正規股票
+            result = yf.screen(q, sortField='dayvolume', sortAsc=False, size=240)
             quotes = result.get('quotes', [])
             all_quotes.extend(quotes)
 
-            # ★ 同步更新即時名稱快取
+            # 同步更新即時名稱快取
             for quote in quotes:
                 sym   = quote.get('symbol', '')
                 sname = quote.get('shortName', '') or quote.get('longName', '')
@@ -1215,28 +1354,25 @@ def fetch_tw_realtime_hot(
                     _REALTIME_NAME_CACHE[sym] = sname
 
         except Exception as e:
-            import streamlit as _st
-            _st.warning(f"⚠️ {exchange} 排行抓取失敗: {e}")
+            try:
+                import streamlit as _st
+                _st.warning(f"⚠️ {exchange} 排行抓取失敗: {e}")
+            except Exception:
+                pass
 
     # 過濾:只留 4 位數字代號的普通股
     filtered = []
     for q in all_quotes:
         sym = q.get('symbol', '')
-        if sym.endswith('.TWO'):   code = sym[:-4]
-        elif sym.endswith('.TW'):  code = sym[:-3]
-        else:                      code = sym
+        code = sym[:-4] if sym.endswith('.TWO') else sym[:-3] if sym.endswith('.TW') else sym
 
         price = float(q.get('regularMarketPrice', 0) or 0)
         vol   = int(q.get('regularMarketVolume', 0) or 0)
-        chg   = float(q.get('regularMarketChangePercent', 0) or 0)
 
-        if (re.match(r'^\d{4}$', code)
-                and price >= min_price
-                and vol   >= min_vol
-                and abs(chg) <= 15.0):
+        if re.match(r'^\d{4}$', code) and price >= min_price and vol >= min_vol:
             filtered.append(q)
 
-    # 依排行類型排序
+    # ★ 過濾完畢後,依目標排行類型排序
     if rank_type == 'gain':
         filtered.sort(
             key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0),
@@ -1246,7 +1382,7 @@ def fetch_tw_realtime_hot(
         filtered.sort(
             key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0)
         )
-    else:
+    else:  # volume
         filtered.sort(
             key=lambda x: int(x.get('regularMarketVolume', 0) or 0),
             reverse=True
@@ -1254,15 +1390,14 @@ def fetch_tw_realtime_hot(
 
     filtered = filtered[:size]
 
-    # 整理回傳格式
     tickers   = [q['symbol'] for q in filtered]
     meta_list = [
         {
-            "symbol":    q['symbol'],
-            "name":      q.get('shortName','') or q.get('longName',''),
-            "price":     float(q.get('regularMarketPrice', 0) or 0),
-            "chg_pct":   float(q.get('regularMarketChangePercent', 0) or 0),
-            "volume":    int(q.get('regularMarketVolume', 0) or 0),
+            "symbol":  q['symbol'],
+            "name":    q.get('shortName', '') or q.get('longName', ''),
+            "price":   float(q.get('regularMarketPrice', 0) or 0),
+            "chg_pct": float(q.get('regularMarketChangePercent', 0) or 0),
+            "volume":  int(q.get('regularMarketVolume', 0) or 0),
         }
         for q in filtered
     ]
@@ -1516,7 +1651,60 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
           <td style="text-align:center;">{chart_btn}</td>
         </tr>"""
 
-    return modal_js + head + body + "</tbody></table>"
+    # ── 手機卡片版(mobile-cards,桌機隱藏) ─────────────────────────
+    cards_html = '<div class="mobile-cards">'
+    for i, r in enumerate(filtered, 1):
+        cat   = r["category"]
+        wr    = r["勝率"]
+        bc    = bar_color.get(cat, "#1565c0")
+        code  = r["代號"]
+        name  = r.get("股名", "")
+        url   = r.get("chart_url", get_chart_url(code))
+        title_str = f"{name} ({code})" if name else code
+        safe_title = title_str.replace("'", " ").replace('"', ' ')
+        safe_url   = url.replace("'", "%27")
+
+        badge_bg = {"top":"#0a7c59","mid":"#d97706","warn":"#c0392b"}.get(cat,"#1565c0")
+        badge_txt = {"top":"🚀 頂級浪潮","mid":"⏳ 中繼蓄勢","warn":"🛑 警戒浪潮"}.get(cat, cat)
+        rc = r["R_cycle"]
+        rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+
+        cards_html += f"""
+        <div class="scan-card">
+          <div class="sc-header">
+            <div>
+              <a href="{url}" target="_blank" class="sc-code">#{i} {code}</a>
+              <span class="sc-name">{" · " + name if name else ""}</span>
+            </div>
+            <span class="sc-badge" style="background:{badge_bg};color:#fff;">{badge_txt}</span>
+          </div>
+          <div class="sc-row">
+            <span class="sc-price">{r['收盤價']}</span>
+            <span class="sc-wr" style="color:{bc};">{wr:.1f}%</span>
+          </div>
+          <div class="sc-bar-wrap">
+            <div class="sc-bar-fill" style="width:{min(wr,100):.0f}%;background:{bc};"></div>
+          </div>
+          <div class="sc-meta">
+            <span>R_cycle: <b style="color:{rc_color};">{rc:.3f}</b></span>
+            <span>修正基準: <b>{r['T_median']:.0f}天</b></span>
+            <span>拉回天數: <b>{r['D_current']}天</b></span>
+          </div>
+          <div class="sc-desc">
+            📊 {r['均線型態'][:30]}<br>
+            📈 {r['KD狀態'][:30]}
+          </div>
+          <div style="margin-top:8px;text-align:right;">
+            <button onclick="openChart('{safe_url}','{safe_title}')"
+              style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:6px;
+                     padding:5px 12px;color:#1565c0;font-size:14px;cursor:pointer;">
+              📈 開啟技術線型
+            </button>
+          </div>
+        </div>"""
+    cards_html += '</div>'
+
+    return modal_js + cards_html + head + body + "</tbody></table>"
 
 
 
