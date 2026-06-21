@@ -969,24 +969,33 @@ TW_NAME_MAP = {
 
 def get_stock_name(ticker: str) -> str:
     """
-    取得股票中文名稱(含代號)。
-    優先查對照表;查不到時嘗試從 yfinance 取英文 shortName 作 fallback。
+    取得股票名稱,查詢優先順序:
+      1. TW_NAME_MAP (中文名稱靜態對照表)
+      2. _REALTIME_NAME_CACHE (從即時排行screener取得的英文shortName)
+      3. 回傳代號本身(最終 fallback)
+
+    ★ 不再呼叫 yf.Ticker(t).info (太慢,批量掃描時每檔要額外多1~2秒)
     """
+    # 優先: 中文名稱靜態對照表
     name = TW_NAME_MAP.get(ticker, '')
     if name:
         return name
-    # Fallback: 取英文名(去掉冗長的法律後綴)
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        n = info.get('shortName','') or info.get('longName','')
-        # 清理常見英文後綴
-        for suffix in [' Inc.','Inc','CO., LTD.',' Co., Ltd.','Corp.',' Corporation',
-                       ' CORP',' INC',' CO LTD']:
-            n = n.replace(suffix,'').replace(suffix.upper(),'')
-        return n.strip() or ticker
-    except:
-        return ticker  # 最後 fallback 只顯示代號
+
+    # 次優: 即時排行快取(英文shortName)
+    cached = _REALTIME_NAME_CACHE.get(ticker, '')
+    if cached:
+        # 清理常見英文後綴讓顯示簡潔
+        for suffix in [
+            ' CO., LTD.', ' Co., Ltd.', ' CO LTD', ' CO.LTD',
+            ' CORPORATION', ' Corporation', ' Corp.', ' CORP',
+            ' INC.', ' Inc.', ' INC', ' LTD.', ' Ltd.',
+            ' INTERNATIONAL', ' International',
+        ]:
+            cached = cached.replace(suffix, '').replace(suffix.upper(), '')
+        return cached.strip() or ticker
+
+    # 最終 fallback: 直接回傳代號(不再打額外API)
+    return ticker
 
 
 def get_chart_url(ticker: str) -> str:
@@ -1145,7 +1154,14 @@ TW_ELECTRONIC_759 = [
 #  即時台灣熱門排行函式 (每次掃描前動態抓取,非靜態清單)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=300, show_spinner=False)   # 快取 5 分鐘,避免重複打 API
+# ─────────────────────────────────────────────────────────────────────────────
+#  即時台灣熱門排行函式 (每次掃描前動態抓取,非靜態清單)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 全域即時名稱快取(從screener結果補充TW_NAME_MAP沒有的英文名)
+_REALTIME_NAME_CACHE: dict[str, str] = {}
+
+
 def fetch_tw_realtime_hot(
     rank_type: str = 'volume',
     size: int = 100,
@@ -1155,21 +1171,23 @@ def fetch_tw_realtime_hot(
     """
     即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行股票代號。
 
+    ★ 修正: size 從 300 改為 240(Yahoo Finance API 上限為 250)
+    ★ 新增: 把 screener 回傳的 shortName 注入 _REALTIME_NAME_CACHE,
+             讓後續 get_stock_name() 能用到更準確的名稱,減少顯示原始代號的問題
+
     rank_type:
       'volume'  — 今日成交量最大(量能最強)
       'gain'    — 今日漲幅最大(強勢股)
       'loss'    — 今日跌幅最大(弱勢/超跌反彈)
 
-    回傳:
-      tickers   : [str]  可直接送入批量掃描的代號清單(含 .TW/.TWO 後綴)
-      meta_list : [dict] 每檔的即時資訊(代號/股名/現價/漲跌幅/成交量)
-
     過濾條件(避免認股權證、期貨等混入):
       - 代號必須是純 4 位數字 (排除 6~7 位的認股權/選擇權)
       - 股價 >= min_price 元
       - 成交量 >= min_vol 股
-      - 漲跌幅絕對值 <= 15% (排除異常極端股)
+      - 漲跌幅絕對值 <= 15%
     """
+    global _REALTIME_NAME_CACHE
+
     if not _EQUITY_QUERY_AVAILABLE:
         return [], []
 
@@ -1184,10 +1202,21 @@ def fetch_tw_realtime_hot(
     for exchange in ['TAI', 'TWO']:
         try:
             q = EquityQuery('eq', ['exchange', exchange])
-            result = yf.screen(q, sortField=sortField, sortAsc=sortAsc, size=300)
-            all_quotes.extend(result.get('quotes', []))
-        except Exception:
-            pass
+            # ★ size=240 (Yahoo上限=250,留緩衝避免報錯)
+            result = yf.screen(q, sortField=sortField, sortAsc=sortAsc, size=240)
+            quotes = result.get('quotes', [])
+            all_quotes.extend(quotes)
+
+            # ★ 同步更新即時名稱快取
+            for quote in quotes:
+                sym   = quote.get('symbol', '')
+                sname = quote.get('shortName', '') or quote.get('longName', '')
+                if sym and sname:
+                    _REALTIME_NAME_CACHE[sym] = sname
+
+        except Exception as e:
+            import streamlit as _st
+            _st.warning(f"⚠️ {exchange} 排行抓取失敗: {e}")
 
     # 過濾:只留 4 位數字代號的普通股
     filtered = []
@@ -1544,7 +1573,7 @@ def render_sidebar():
                     "📈 即時漲幅排行 (今日強勢股)",
                     "📉 即時跌幅排行 (今日弱勢/超跌)",
                     "⭐ 台灣熱門100檔 (固定清單)",
-                    "🔬 台灣電子股759檔 (全市場)",
+                    "🔬 台股全市場759檔 (含傳產/金融/電子)",
                     "✏️ 僅自選股",
                 ],
                 index=0,
@@ -1832,9 +1861,9 @@ def main():
             is_realtime = True
             rank_label  = "📉 今日跌幅排行"
 
-        elif "電子股759" in scan_universe:
+        elif "全市場759" in scan_universe or "電子股759" in scan_universe:
             preset_list = TW_ELECTRONIC_759
-            rank_label  = "🔬 台灣電子股759檔"
+            rank_label  = "🔬 台股全市場759檔"
 
         elif "✏️" in scan_universe:
             preset_list = []
