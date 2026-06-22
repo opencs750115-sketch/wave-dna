@@ -540,6 +540,32 @@ def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, st
             if "Close" not in df.columns and "Adj Close" in df.columns:
                 df = df.rename(columns={"Adj Close": "Close"})
 
+            # ★ Close=NaN 修補:yfinance 在當天盤後有時回傳 Close=NaN 但 High/Low 有值
+            #   (6/22 南茂就是此情況:Close=NaN,導致 dropna 把最新一列過濾掉卡在前一天)
+            #   修補順序:① Adj Close → ② (High+Low)/2 → ③ fast_info.last_price
+            if df["Close"].isna().any():
+                nan_mask = df["Close"].isna()
+                # ① 先嘗試 Adj Close
+                if "Adj Close" in df.columns:
+                    df.loc[nan_mask, "Close"] = df.loc[nan_mask, "Adj Close"]
+                # ② 若還有 NaN,用 (High+Low)/2
+                still_nan = df["Close"].isna()
+                if still_nan.any() and "High" in df.columns and "Low" in df.columns:
+                    df.loc[still_nan, "Close"] = (
+                        df.loc[still_nan, "High"] + df.loc[still_nan, "Low"]
+                    ) / 2
+                # ③ 最後仍有 NaN,嘗試 fast_info(只呼叫一次)
+                still_nan = df["Close"].isna()
+                if still_nan.any():
+                    try:
+                        lp = float(getattr(yf.Ticker(cand).fast_info, 'last_price', 0) or 0)
+                        if lp > 0:
+                            df.loc[still_nan, "Close"] = lp
+                            if "Adj Close" in df.columns:
+                                df.loc[still_nan, "Adj Close"] = lp
+                    except Exception:
+                        pass
+
             df = df.dropna(subset=["Close"])
             if len(df) >= 60:
                 df.index = pd.to_datetime(df.index)
@@ -1614,6 +1640,10 @@ def _scan_one(ticker: str, period: str) -> dict | None:
             df, used = fetch_data(ticker, period=period)
             if df is None or len(df) < 60:
                 return None
+
+            # ★ 批量掃描也需要補丁(fetch_data 是純快取層,補丁必須在外部執行)
+            df, _ = _patch_today_price(df, used)
+
             df  = add_indicators(df)
             dna = detect_wave_dna(df)
             wr  = compute_winrate(dna, df)
