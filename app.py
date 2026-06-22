@@ -396,27 +396,26 @@ p, label, div, span { color: #1a2b3c; }
 
 def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame, bool]:
     """
-    ★ 即時報價自動補丁 v3 (整合升級版)
+    ★ 即時報價自動補丁 v4 — 實戰強制放行版
     ────────────────────────────────────────────────────────────────────────
-    解決的問題:
-      台股盤中(9:10~13:30)或剛收盤後(13:30~15:30),Yahoo Finance 歷史 K 線
-      API 常發生資料不同步,導致 yf.download 的 df 最後一列停在昨天,
-      或雖有今天日期但 Close/Volume 仍是舊值。
+    【架構重點】
+      此函式必須在 @st.cache_data 的快取層「外部」呼叫(見 main() 中的呼叫點)。
+      過去放在 fetch_data 內部時,快取命中就直接回傳舊 df、補丁根本不執行，
+      這才是「點重新整理仍顯示昨天數據」的真正根本原因。
 
-    雙重觸發條件(任一成立即補丁):
-      條件 A — 最後一列日期「不是今天」→ 新增一列
-      條件 B — 最後一列「已是今天」但資料落後:
-               B1. Close 與 fast_info.last_price 差異 > 0.01%
-               B2. Volume 落後 > 歷史量的 10%(比率門檻,避免固定100股
-                   在高成交量股永遠觸發或在超低量股失效的問題)
-               → 就地覆蓋(.loc 更新)
+    【強制放行邏輯】
+      台灣交易時段內(週一~週五 09:02 ~ 15:30),無條件強制更新:
+        - need_patch = True (不比對價格差異或成交量落後)
+        - 用 fast_info 的即時快照直接覆蓋或新增今日 K 棒
+      這確保每次 Streamlit 重新執行(使用者點重整/切換股票)都能拿到最新現價。
 
-    v3 新增保護機制:
-      ① 時區剝離: df.index.tz is not None 時強制 tz_localize(None),
-                  防止未來 yfinance 版本改為帶時區時產生 today_ts 比對錯位
-      ② 09:10 保護: 開盤前 10 分鐘集合競價數據不穩定,不在此區間補丁
-      ③ OHLC 型態防護: getattr 結果加 try/except float 轉換,
-                       防止特殊股票 API 回傳非預期型態時崩潰
+    【保留的防護機制】
+      ① 時區剝離: df.index.tz is not None 時強制 tz_localize(None)
+                  防止 yfinance 未來版本帶時區時產生「兩個今天」的比對錯位
+      ② 09:02 開放: 台股 09:00 集合競價,09:02 第一筆撮合通常已完成
+                    比 09:10 提前 8 分鐘讓使用者能更早看到開盤數據
+      ③ OHLC 型態防護: getattr + try/except float 轉換,防 API 回傳異常值
+      ④ day_high/day_low 開盤初期可能為 0: 改用 previous_close 作 fallback
 
     回傳: (df, patched: bool)
     """
@@ -429,7 +428,7 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         if df.empty:
             return df, False
 
-        # ① 時區剝離:強制確保 df.index 是 tz-naive,避免與 today_ts 對齊錯位
+        # ① 時區剝離: 強制 tz-naive,避免 today_ts 比對錯位
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
 
@@ -439,10 +438,9 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         if now_tw.weekday() >= 5:
             return df, False
 
-        # ② 只在台灣交易時段 09:10 ~ 15:30 嘗試
-        #    09:00~09:10 集合競價撮合期間數據不穩定,略過
+        # ② 交易時段: 09:02 ~ 15:30(放寬至 09:02,集合競價首筆已完成)
         t = now_tw.time()
-        if not (datetime.time(9, 10) <= t <= datetime.time(15, 30)):
+        if not (datetime.time(9, 2) <= t <= datetime.time(15, 30)):
             return df, False
 
         # ── 抓取即時快照 ────────────────────────────────────────────
@@ -456,92 +454,76 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         live_volume = getattr(fast, 'last_volume', None)
         live_volume = int(live_volume) if live_volume is not None else 0
 
-        # ── 判定是否需要補丁 ────────────────────────────────────────
-        need_patch = False
+        # ── 無條件強制補丁(交易時段內直接 True) ─────────────────────
+        # 不再比對價格差異或成交量落後,確保每次呼叫都能同步最新現價
+        need_patch = True   # ★ 強制放行
 
-        # 條件 A: 最後一列日期不是今天
-        if last_date_str != today_str:
-            need_patch = True
-
-        # 條件 B: 最後一列是今天但資料落後
-        else:
-            hist_close  = float(df['Close'].iloc[-1])
-            hist_volume = int(df['Volume'].iloc[-1]) if 'Volume' in df.columns else 0
-
-            # B1: 價格差異 > 0.01%
-            price_changed = abs(hist_close - live_close) > 1e-4
-
-            # B2: 成交量落後 > 歷史量的 10%(比率門檻)
-            #     固定門檻 100 股的問題: 高量股永遠觸發 / 低量股可能失效
-            #     改用 10% 比率: live > hist * 1.1 才算真正落後
-            vol_threshold = max(hist_volume * 0.10, 1000)  # 至少 1000 股差距才算
-            volume_lagging = (live_volume - hist_volume) > vol_threshold
-
-            if price_changed or volume_lagging:
-                need_patch = True
-
-        if not need_patch:
-            return df, False
-
-        # ── ③ 組裝 OHLCV(加型態防護 try/except) ────────────────────
+        # ③ 組裝 OHLCV — 加型態防護與開盤初期 fallback ──────────────
+        prev_close = float(getattr(fast, 'regular_market_previous_close', None)
+                           or live_close)
         try:
-            live_open = float(getattr(fast, 'open',     None) or live_close)
-            live_high = float(getattr(fast, 'day_high', None) or live_close)
-            live_low  = float(getattr(fast, 'day_low',  None) or live_close)
+            live_open = float(getattr(fast, 'open', None) or live_close)
+            # day_high / day_low 在剛開盤後可能回傳 0,用 previous_close 作下限
+            raw_high  = float(getattr(fast, 'day_high', None) or 0)
+            raw_low   = float(getattr(fast, 'day_low',  None) or 0)
+            # 若高低價異常(=0 或小於 prev_close 的 50%),用安全值替代
+            live_high = raw_high if raw_high > prev_close * 0.5 else max(live_open, live_close)
+            live_low  = raw_low  if raw_low  > prev_close * 0.5 else min(live_open, live_close)
         except (ValueError, TypeError):
             live_open = live_high = live_low = live_close
 
-        # OHLC 邏輯保護
+        # OHLC 邏輯終極保護
         live_high = max(live_high, live_open, live_close)
         live_low  = min(live_low,  live_open, live_close)
 
         today_ts = pd.to_datetime(today_str)   # tz-naive,與剝離後的 df.index 對齊
 
-        # ── 執行覆蓋或新增 ──────────────────────────────────────────
+        # ── 就地覆蓋(今天已存在)或新增(今天不存在) ─────────────────
+        patch_vals = [("Open",      live_open),
+                      ("High",      live_high),
+                      ("Low",       live_low),
+                      ("Close",     live_close),
+                      ("Adj Close", live_close),
+                      ("Volume",    live_volume)]
+
         if last_date_str == today_str:
-            # 條件 B: 就地覆蓋今天那一列
-            for col, val in [("Open",      live_open),
-                             ("High",      live_high),
-                             ("Low",       live_low),
-                             ("Close",     live_close),
-                             ("Adj Close", live_close),
-                             ("Volume",    live_volume)]:
+            # 今天的列已存在 → 直接覆蓋
+            for col, val in patch_vals:
                 if col in df.columns:
                     df.loc[today_ts, col] = val
             df = df.sort_index()
         else:
-            # 條件 A: 新增今天那一列
+            # 今天的列不存在 → 新增一列
             new_row = pd.DataFrame(index=pd.DatetimeIndex([today_ts]))
-            col_vals = {"Open": live_open, "High": live_high, "Low": live_low,
-                        "Close": live_close, "Adj Close": live_close,
-                        "Volume": live_volume}
+            col_map = {k: v for k, v in patch_vals}
             for col in df.columns:
-                new_row[col] = col_vals.get(col, float('nan'))
+                new_row[col] = col_map.get(col, float('nan'))
             df = pd.concat([df, new_row]).sort_index()
             df = df[~df.index.duplicated(keep='last')]
 
         return df, True
 
     except Exception:
+        # 任何意外(假日/API 異常/網路逾時)皆優雅略過,不中斷主程式
         return df, False
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_data(ticker: str, period: str = "2y") -> pd.DataFrame | None:
+def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, str]:
     """
-    以 yfinance 下載個股過去 N 年日線資料。支援台股(自動補 .TW / .TWO)與美股。
+    以 yfinance 下載個股歷史日線資料(純下載快取層,不含即時補丁)。
+    支援台股(自動補 .TW / .TWO)與美股。
 
     ★ auto_adjust=False: 保留原始未還原的 OHLCV 收盤價。
-      台股配息時 auto_adjust=True 會把歷史所有收盤價往下調整,導致波峰波谷
-      識別與 T_median 計算嚴重失真。改用原始價格讓K線與看盤軟體一致。
+      台股配息時 auto_adjust=True 會把歷史收盤價往下調整,導致波峰波谷
+      識別與 T_median 計算嚴重失真。
 
-    ★ 升級版今日即時報價補丁 (_patch_today_price v2):
-      雙重觸發條件——
-        A. 最後一列不是今天 → 補入新列
-        B. 最後一列是今天但數據落後 → 就地覆蓋
-      確保 R_cycle / 均線型態在盤中或剛收盤時不因資料延遲而失真。
+    ★ 即時補丁已移至快取層外部:
+      過去把 _patch_today_price 放在此函式內,快取命中時補丁完全不執行。
+      現在補丁在 main() 的快取外部呼叫(fetch_data 之後、add_indicators 之前),
+      確保每次 Streamlit 重新執行都能更新今日現價。
 
-    快取 10 分鐘,避免頻繁打 Yahoo Finance。
+    快取 10 分鐘,避免頻繁打 Yahoo Finance 歷史 API。
     """
     candidates = [ticker.upper()]
     t = ticker.strip().upper()
@@ -561,22 +543,7 @@ def fetch_data(ticker: str, period: str = "2y") -> pd.DataFrame | None:
             df = df.dropna(subset=["Close"])
             if len(df) >= 60:
                 df.index = pd.to_datetime(df.index)
-
-                # ── ★ 升級版補丁 ──────────────────────────────────
-                df, patched = _patch_today_price(df, cand)
-                if patched:
-                    try:
-                        import streamlit as _st
-                        live_close = float(df["Close"].iloc[-1])
-                        _st.session_state["_patch_msg"] = (
-                            f"🧬 系統已自動對齊今日即時報價補丁"
-                            f"（最新價：{live_close:.2f}）"
-                        )
-                    except Exception:
-                        pass
-                # ────────────────────────────────────────────────────
-
-                return df, cand
+                return df, cand   # ← 純歷史資料,補丁在 main() 外層執行
         except Exception:
             continue
     return None, ticker
@@ -2389,6 +2356,10 @@ def main():
                     df_sel, used_sel = fetch_data(sel_ticker, period=period)
 
                 if df_sel is not None and len(df_sel) >= 60:
+                    # ★ 補丁在 cache 外部執行
+                    df_sel, patched_sel = _patch_today_price(df_sel, used_sel)
+                    if patched_sel:
+                        st.toast(f"🧬 即時報價已同步：{used_sel} 最新價 {float(df_sel['Close'].iloc[-1]):.2f}", icon="⚡")
                     df_sel  = add_indicators(df_sel)
                     dna_sel = detect_wave_dna(df_sel)
                     wr_sel  = compute_winrate(dna_sel, df_sel)
@@ -2473,11 +2444,6 @@ def main():
     with st.spinner(f"正在下載「{ticker_raw}」近 {period} 日線資料..."):
         df, used_ticker = fetch_data(ticker_raw, period=period)
 
-    # ★ 今日即時報價補丁通知(若 fetch_data 內部觸發了補丁,在此顯示 toast)
-    patch_msg = st.session_state.pop("_patch_msg", None)
-    if patch_msg:
-        st.toast(patch_msg, icon="⚡")
-
     if df is None or len(df) < 60:
         st.error(
             f"❌ 無法取得「{ticker_raw}」的資料。\n\n"
@@ -2488,6 +2454,12 @@ def main():
             f"**建議:** 可試試直接輸入帶後綴的代號,如 `2330.TW` 或 `2330.TWO`"
         )
         return
+
+    # ★ 即時報價補丁 — 在 cache 外部執行,確保每次重整都能更新今日現價
+    df, patched = _patch_today_price(df, used_ticker)
+    if patched:
+        live_close = float(df["Close"].iloc[-1])
+        st.toast(f"🧬 即時報價已同步：{used_ticker} 最新價 {live_close:.2f}", icon="⚡")
 
     df  = add_indicators(df)
     dna = detect_wave_dna(df)
