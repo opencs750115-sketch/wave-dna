@@ -268,9 +268,21 @@ p, label, div, span { color: #1a2b3c; }
     }
     [data-testid="stMetricValue"] { font-size: 18px !important; }
 
-    /* 掃描結果表格在手機改為卡片式 */
-    .fwd-table { display: none !important; }
+    /* 掃描結果表格在手機改為卡片式(只隱藏 scan-table,保留 fwd-table) */
+    .scan-table { display: none !important; }
     .mobile-cards { display: block !important; }
+
+    /* 前瞻路徑表格在手機改為橫向可滾動 */
+    .fwd-table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .fwd-table {
+        min-width: 520px;
+        font-size: 12px !important;
+        display: none !important;          /* 手機隱藏表格,顯示卡片 */
+    }
+    .forecast-cards { display: block !important; }
 
     /* 卡片列間距 */
     .dna-card { padding: 12px 14px !important; margin-bottom: 10px !important; }
@@ -281,6 +293,8 @@ p, label, div, span { color: #1a2b3c; }
 /* 桌機隱藏卡片式、顯示表格式 */
 @media (min-width: 769px) {
     .mobile-cards { display: none !important; }
+    .scan-table { display: table !important; }
+    .forecast-cards { display: none !important; }
     .fwd-table { display: table !important; }
 }
 
@@ -1181,8 +1195,53 @@ def html_feat_bar(label: str, score: float, desc: str, color: str = "#1565c0") -
 
 
 def html_forward_table(rows: list[dict], last_close: float) -> str:
+    """
+    前瞻路徑矩陣:
+    - 桌機: fwd-table 標準表格
+    - 手機: forecast-cards 卡片式(每日一張),避免表格橫向溢出
+    """
+    # ── 手機卡片式 ──────────────────────────────────────────────────
+    cards = '<div class="forecast-cards">'
+    for r in rows:
+        p   = r["演算法預估價"]
+        hi  = r["上限參考"]
+        lo  = r["下限參考"]
+        chg = (p - last_close) / last_close * 100
+        if chg > 0.5:    pcolor, arrow = "#0a7c59", "▲"
+        elif chg < -0.5: pcolor, arrow = "#c0392b", "▼"
+        else:             pcolor, arrow = "#d97706", "─"
+
+        cards += f"""
+        <div style="background:#fff;border:1.5px solid #c8d8e8;border-left:4px solid {pcolor};
+                    border-radius:10px;padding:12px 14px;margin-bottom:8px;
+                    box-shadow:0 1px 4px rgba(21,101,192,0.06);">
+          <div style="display:flex;justify-content:space-between;align-items:center;
+                      margin-bottom:6px;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                         color:#4a6fa5;font-weight:600;">{r['交易日']}
+              <span style="color:#7a9bbf;font-weight:400;"> · {r['預估日期']}</span>
+            </span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:20px;
+                         font-weight:700;color:{pcolor};">
+              {arrow} {p:.2f}
+            </span>
+          </div>
+          <div style="display:flex;justify-content:space-between;
+                      font-family:'IBM Plex Mono',monospace;font-size:13px;margin-bottom:6px;">
+            <span style="color:{pcolor};font-weight:600;">{chg:+.2f}%</span>
+            <span style="color:#7a9bbf;">± {((hi-lo)/2):.2f}</span>
+          </div>
+          <div style="font-size:12px;color:#4a6fa5;line-height:1.5;
+                      border-top:1px solid #eaf2fb;padding-top:6px;">
+            {r['型態觀測重點']}
+          </div>
+        </div>"""
+    cards += '</div>'
+
+    # ── 桌機表格式 ──────────────────────────────────────────────────
     head = "<thead><tr>" + "".join(
-        f"<th>{col}</th>" for col in ["交易日", "預估日期", "演算法預估價", "±波動幅度", "型態觀測重點"]
+        f"<th>{col}</th>"
+        for col in ["交易日", "預估日期", "演算法預估價", "±波動幅度", "型態觀測重點"]
     ) + "</tr></thead>"
 
     tbody = ""
@@ -1204,7 +1263,8 @@ def html_forward_table(rows: list[dict], last_close: float) -> str:
           <td style="color:#2d3748;font-size:13px;line-height:1.5;">{r['型態觀測重點']}</td>
         </tr>"""
 
-    return f'<table class="fwd-table">{head}<tbody>{tbody}</tbody></table>'
+    table = f'<table class="fwd-table">{head}<tbody>{tbody}</tbody></table>'
+    return cards + table
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1573,7 +1633,7 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
     </script>"""
 
     head = """
-    <table class="fwd-table" style="font-size:14px;width:100%;">
+    <table class="scan-table fwd-table" style="font-size:14px;width:100%;">
       <thead>
         <tr>
           <th style="width:32px;">#</th>
