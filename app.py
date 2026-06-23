@@ -1049,6 +1049,66 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
+def evaluate_entry_point(dna: dict, wr: dict, df: pd.DataFrame) -> dict:
+    """
+    買點獵人評估引擎 — 實作「四步SOP」
+    ────────────────────────────────────────────────────────────────────────
+    五個判斷條件與權重:
+      ① R_cycle ≥ 1.0   → 35分 (最重要，時間波飽和)
+         R_cycle ≥ 1.3   → 額外+10分 (超額修正，能量蓄積更充分)
+      ② KD 低檔拐頭      → 25分 (K9 > D9 且 K9 < 60，未高檔鈍化)
+      ③ 中繼蓄勢分類     → 20分 (勝率 50~70% 的蓄勢期)
+      ④ 勝率甜蜜區 50~68% → 10分 (不追已噴發的 85%+)
+      ⑤ 量比 < 2.5       → 10分 (未爆量，主力仍在佈局階段)
+
+    訊號分級:
+      ≥ 80分: 🎯 強力買點
+      ≥ 65分: 📌 潛力買點
+      ≥ 50分: ⚠️ 蓄勢觀察
+      < 50分: 🚫 時機未到
+    """
+    cat     = wr["category"]
+    winrate = wr["winrate"] * 100
+    r       = dna["R_cycle"]
+    k9      = wr["k9"]
+    d9      = wr["d9"]
+    vol_r   = wr["vol_ratio"]
+    close   = wr["close"]
+
+    c1_mid    = cat == "mid"
+    c2_wr     = 50 <= winrate <= 68
+    c3_rcycle = r >= 1.0
+    c4_kd     = k9 > d9 and k9 < 60
+    c5_vol    = vol_r < 2.5
+
+    if k9 < 25:      kd_stage = "⭐ 極底金叉"
+    elif k9 < 40:    kd_stage = "✅ 低檔金叉"
+    elif k9 < 60:    kd_stage = "🔸 中低金叉"
+    elif k9 > d9:    kd_stage = "⚠️ 中高金叉"
+    else:            kd_stage = "❌ 高檔/死叉"
+
+    score = 0
+    if c3_rcycle: score += 35
+    if c4_kd:     score += 25
+    if c1_mid:    score += 20
+    if c2_wr:     score += 10
+    if c5_vol:    score += 10
+    if r >= 1.3:  score = min(score + 10, 100)
+
+    if score >= 80:   signal = "🎯 強力買點"
+    elif score >= 65: signal = "📌 潛力買點"
+    elif score >= 50: signal = "⚠️ 蓄勢觀察"
+    else:             signal = "🚫 時機未到"
+
+    return {
+        "score": score, "signal": signal, "kd_stage": kd_stage,
+        "conditions": {
+            "c1_mid": c1_mid, "c2_wr": c2_wr,
+            "c3_rcycle": c3_rcycle, "c4_kd": c4_kd, "c5_vol": c5_vol,
+        },
+    }
+
+
 def generate_forward_matrix(
     df: pd.DataFrame,
     wr: dict,
@@ -1660,11 +1720,12 @@ def _scan_one(ticker: str, period: str) -> dict | None:
             df  = add_indicators(df)
             dna = detect_wave_dna(df)
             wr  = compute_winrate(dna, df)
+            entry = evaluate_entry_point(dna, wr, df)  # ★ 買點評估
             last = df.iloc[-1]
             return {
                 "代號":       used,
-                "股名":       get_stock_name(used),          # ★ 中文股名
-                "chart_url":  get_chart_url(used),           # ★ Yahoo技術圖URL
+                "股名":       get_stock_name(used),
+                "chart_url":  get_chart_url(used),
                 "input":      ticker,
                 "收盤價":     round(float(last["Close"]), 2),
                 "勝率":       round(wr["winrate"] * 100, 1),
@@ -1681,6 +1742,11 @@ def _scan_one(ticker: str, period: str) -> dict | None:
                 "量比":       wr["vol_ratio"],
                 "days_trough": dna.get("days_since_trough", -1),
                 "corr_end":   dna.get("correction_end_date"),
+                # ── ★ 買點獵人欄位 ────────────────────────────────
+                "買點分數":   entry["score"],
+                "買點訊號":   entry["signal"],
+                "KD拐頭":     entry["kd_stage"],
+                "買點條件":   entry["conditions"],
             }
         except Exception as e:
             err_str = str(e).lower()
@@ -1728,7 +1794,8 @@ def run_batch_scan(tickers: list[str], period: str,
 #  掃描結果 HTML 表格渲染
 # ─────────────────────────────────────────────────────────────────────────────
 
-def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
+def html_scan_table(rows: list[dict], min_winrate: float = 0,
+                    hunter_mode: bool = False) -> str:
     """
     批量掃描結果表格。
     ★ 新增: 股名欄 / 點擊代號開新分頁 / 📈按鈕彈出iframe技術線型視窗
@@ -1782,7 +1849,27 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
     }
     </script>"""
 
-    head = """
+    if hunter_mode:
+        head = """
+    <table class="scan-table fwd-table" style="font-size:14px;width:100%;">
+      <thead>
+        <tr>
+          <th style="width:32px;">#</th>
+          <th style="min-width:90px;">代號</th>
+          <th style="min-width:80px;">股名</th>
+          <th style="width:78px;">收盤</th>
+          <th style="width:100px;">買點分數</th>
+          <th style="width:90px;">訊號</th>
+          <th style="width:72px;">R_cycle</th>
+          <th style="width:70px;">勝率</th>
+          <th style="width:90px;">KD拐頭</th>
+          <th style="width:60px;">量比</th>
+          <th>均線型態</th>
+          <th style="width:42px;">線型</th>
+        </tr>
+      </thead><tbody>"""
+    else:
+        head = """
     <table class="scan-table fwd-table" style="font-size:14px;width:100%;">
       <thead>
         <tr>
@@ -1841,7 +1928,47 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0) -> str:
                      f'style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:6px;'
                      f'padding:3px 8px;cursor:pointer;font-size:14px;color:#1565c0;">📈</button>')
 
-        body += f"""
+        entry_score  = r.get("買點分數", 0)
+        entry_signal = r.get("買點訊號", "")
+        kd_stage     = r.get("KD拐頭", "")
+        vol_r        = r.get("量比", 1.0)
+
+        # 買點分數顏色
+        es_color = ("#0a7c59" if entry_score >= 80
+                    else "#1565c0" if entry_score >= 65
+                    else "#d97706" if entry_score >= 50
+                    else "#c0392b")
+
+        if hunter_mode:
+            body += f"""
+        <tr style="{row_bg}">
+          <td style="color:#7a9bbf;font-size:13px;text-align:center;">{i}</td>
+          <td>{code_link}</td>
+          <td>{name_html}</td>
+          <td style="color:#1a2b3c;font-weight:700;font-size:15px;
+                     font-family:'IBM Plex Mono',monospace;">{r['收盤價']}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:55px;background:#c8d8e8;border-radius:4px;
+                          height:10px;overflow:hidden;">
+                <div style="width:{min(entry_score,100)}%;height:10px;border-radius:4px;
+                            background:{es_color};"></div>
+              </div>
+              <span style="color:{es_color};font-weight:700;font-size:15px;
+                           font-family:'IBM Plex Mono',monospace;">{entry_score}</span>
+            </div>
+          </td>
+          <td><span style="font-size:13px;">{entry_signal}</span></td>
+          <td style="color:{rc_color};font-weight:700;font-size:14px;
+                     font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+          <td style="color:#4a6fa5;font-size:13px;">{r['勝率']:.0f}%</td>
+          <td style="color:#2d3748;font-size:13px;">{kd_stage}</td>
+          <td style="color:#4a6fa5;font-size:13px;">{vol_r:.1f}x</td>
+          <td style="color:#2d3748;font-size:13px;">{r['均線型態'][:20]}</td>
+          <td style="text-align:center;">{chart_btn}</td>
+        </tr>"""
+        else:
+            body += f"""
         <tr style="{row_bg}">
           <td style="color:#7a9bbf;font-size:13px;text-align:center;">{i}</td>
           <td>{code_link}</td>
@@ -1982,8 +2109,27 @@ def render_sidebar():
             )
             use_hot100 = scan_universe != "✏️ 僅自選股"
 
-            min_wr = st.slider("最低勝率門檻 (%)", 0, 90, 70, step=5,
-                               help="只顯示勝率大於此值的標的")
+            # ── 掃描模式 ────────────────────────────────────────────
+            scan_mode = st.radio(
+                "掃描目標",
+                ["📊 高勝率標的 (≥門檻)", "🎯 買點獵人 (底部起漲點)"],
+                index=0,
+                help=(
+                    "高勝率模式: 找已在噴發的頂級浪潮\n"
+                    "買點獵人: 找勝率55~68%、R_cycle≥1.0的中繼蓄勢底部"
+                )
+            )
+
+            if "高勝率" in scan_mode:
+                min_wr = st.slider("最低勝率門檻 (%)", 0, 90, 70, step=5,
+                                   help="只顯示波段勝率大於此值的標的")
+                min_entry_score = 0  # 不篩買點分數
+            else:
+                min_wr = 0  # 買點獵人模式不限勝率
+                min_entry_score = st.slider(
+                    "最低買點分數", 50, 90, 65, step=5,
+                    help="≥80 強力買點 / ≥65 潛力買點 / ≥50 蓄勢觀察"
+                )
 
         st.markdown("---")
         st.markdown('<div style="font-size:10px;color:#7a9bbf;letter-spacing:2px;">WAVE DNA 參數</div>',
@@ -1999,6 +2145,8 @@ def render_sidebar():
             custom_raw = ""
             min_wr  = 70
             use_hot100 = True
+            scan_mode = "📊 高勝率標的 (≥門檻)"
+            min_entry_score = 0
         else:
             scan    = st.button("📡 開始批量掃描", use_container_width=True, type="primary")
             analyze = False
@@ -2014,7 +2162,9 @@ def render_sidebar():
 
     return (ticker.strip(), period, top_n, analyze,
             scan, custom_raw, min_wr, use_hot100, mode,
-            locals().get('scan_universe', '台灣熱門100檔'))
+            locals().get('scan_universe', '台灣熱門100檔'),
+            locals().get('scan_mode', '📊 高勝率標的 (≥門檻)'),
+            locals().get('min_entry_score', 0))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2192,7 +2342,8 @@ def render_forward_table(rows: list[dict], last_close: float):
 
 def main():
     (ticker_raw, period, top_n, analyze,
-     scan, custom_raw, min_wr, use_hot100, mode, scan_universe) = render_sidebar()
+     scan, custom_raw, min_wr, use_hot100, mode,
+     scan_universe, scan_mode, min_entry_score) = render_sidebar()
 
     # 頁面標題
     st.markdown("""
@@ -2364,17 +2515,46 @@ def main():
         c5.metric(f"≥{min_wr}% 標的", f"{hit_count} 檔",
                   f"耗時 {elapsed:.1f}s")
 
-        # ── 高勝率篩選結果 ────────────────────────────────────────────
-        st.markdown(f'<div class="section-title">🎯 高勝率標的 (≥ {min_wr}%)</div>',
-                    unsafe_allow_html=True)
+        # ── 篩選結果顯示 ─────────────────────────────────────────────
+        is_hunter_mode = "買點獵人" in scan_mode
 
-        hit_results = [r for r in results if r["勝率"] >= min_wr]
+        if is_hunter_mode:
+            # 買點獵人模式:依買點分數篩選
+            hit_results = sorted(
+                [r for r in results if r.get("買點分數", 0) >= min_entry_score],
+                key=lambda x: x.get("買點分數", 0), reverse=True
+            )
+            st.markdown(
+                f'<div class="section-title">🎯 買點獵人結果 '
+                f'(買點分數 ≥ {min_entry_score}，共 {len(hit_results)} 檔)</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown("""
+            <div style="font-size:13px;color:#4a6fa5;background:#fff8e1;
+                        border-left:4px solid #d97706;padding:10px 14px;
+                        border-radius:6px;margin-bottom:14px;">
+            🎯 <b>買點獵人模式</b>：以下為符合「R_cycle≥1.0時間波飽和 + KD低檔拐頭 + 中繼蓄勢」
+            三大條件的底部布局候選標的，<b>非高勝率追漲股</b>。
+            請配合 D+1 下限價格分批掛單，以 D+2 下限作停損基準。
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # 高勝率模式:依勝率篩選
+            hit_results = [r for r in results if r["勝率"] >= min_wr]
+            st.markdown(f'<div class="section-title">🎯 高勝率標的 (≥ {min_wr}%)</div>',
+                        unsafe_allow_html=True)
 
         if not hit_results:
-            st.warning(f"⚠️ 目前沒有勝率 ≥ {min_wr}% 的標的。建議降低門檻或換個掃描清單。")
+            if is_hunter_mode:
+                st.warning(f"⚠️ 目前沒有買點分數 ≥ {min_entry_score} 的標的。建議降低門檻或換個掃描清單。")
+            else:
+                st.warning(f"⚠️ 目前沒有勝率 ≥ {min_wr}% 的標的。建議降低門檻或換個掃描清單。")
         else:
-            st.markdown(html_scan_table(hit_results, min_winrate=0),
-                        unsafe_allow_html=True)
+            st.markdown(
+                html_scan_table(hit_results, min_winrate=0,
+                                hunter_mode=is_hunter_mode),
+                unsafe_allow_html=True
+            )
 
             # ── 點擊展開完整分析 ────────────────────────────────────
             st.markdown('<div class="section-title">🔬 展開個股完整 DNA 分析</div>',
@@ -2526,6 +2706,69 @@ def main():
     st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
 
     rows = generate_forward_matrix(df, wr, dna, n_days=top_n)
+
+    # ── ★ 買點獵人評估看板 ─────────────────────────────────────────
+    entry = evaluate_entry_point(dna, wr, df)
+    score = entry["score"]
+    signal = entry["signal"]
+    conds = entry["conditions"]
+
+    # 取 D+1/D+2 的前瞻下限作為掛單和停損參考
+    d1_low = rows[0]['下限參考'] if len(rows) > 0 else None
+    d2_low = rows[1]['下限參考'] if len(rows) > 1 else None
+
+    score_color = ("#0a7c59" if score >= 80 else "#1565c0" if score >= 65
+                   else "#d97706" if score >= 50 else "#c0392b")
+    score_bg    = ("#e8f4ec" if score >= 80 else "#eaf2fb" if score >= 65
+                   else "#fef3c7" if score >= 50 else "#fde8e8")
+
+    cond_icon = lambda v: "✅" if v else "❌"
+
+    d1_str = f"{d1_low:.2f}" if d1_low else "計算中"
+    d2_str = f"{d2_low:.2f}" if d2_low else "計算中"
+
+    st.markdown(f"""
+    <div class="section-title">🎯 買點獵人評估 (SOP 四步驟)</div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style="background:{score_bg};border:2px solid {score_color};border-radius:12px;
+                padding:16px 20px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;
+                  flex-wrap:wrap;gap:12px;">
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                      color:#4a6fa5;margin-bottom:4px;">買點綜合評分</div>
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:40px;
+                         font-weight:700;color:{score_color};">{score}</span>
+            <span style="font-size:20px;font-weight:700;color:{score_color};">{signal}</span>
+          </div>
+        </div>
+        <div style="font-size:14px;line-height:2.0;">
+          <div>{cond_icon(conds['c3_rcycle'])} ① R_cycle ≥ 1.0 (時間波飽和) &nbsp;
+               <b style="color:{score_color};">{dna['R_cycle']:.3f}</b></div>
+          <div>{cond_icon(conds['c4_kd'])} ② KD低檔拐頭 &nbsp;
+               <b>{entry['kd_stage']}</b> (K9={wr['k9']:.0f} D9={wr['d9']:.0f})</div>
+          <div>{cond_icon(conds['c1_mid'])} ③ 中繼蓄勢分類 &nbsp;
+               <b>{wr['category_label']}</b></div>
+          <div>{cond_icon(conds['c2_wr'])} ④ 勝率甜蜜區 50~68% &nbsp;
+               <b>{wr['winrate']*100:.0f}%</b></div>
+          <div>{cond_icon(conds['c5_vol'])} ⑤ 量比 &lt; 2.5 (未過熱) &nbsp;
+               <b>{wr['vol_ratio']:.2f}x</b></div>
+        </div>
+      </div>
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid {score_color}33;
+                  font-size:13px;color:#1a2b3c;">
+        <b style="color:{score_color};">📌 掛單區間參考</b><br>
+        D+1 波動下限 <b style="font-family:'IBM Plex Mono',monospace;">{d1_str}</b> 元
+        （分批低接掛單）&nbsp;｜&nbsp;
+        D+2 波動下限 <b style="font-family:'IBM Plex Mono',monospace;">{d2_str}</b> 元
+        （停損基準，跌破即出）
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     render_forward_table(rows, wr["close"])
 
     st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>', unsafe_allow_html=True)
