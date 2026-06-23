@@ -508,22 +508,42 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         return df, False
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, str]:
+def _get_cache_bucket() -> str:
     """
-    以 yfinance 下載個股歷史日線資料(純下載快取層,不含即時補丁)。
-    支援台股(自動補 .TW / .TWO)與美股。
+    動態快取 bucket key:
+      盤中 (09:00~13:35 台灣時間) → 精確到「分鐘」: 每分鐘快取自動失效
+      盤後 / 非交易時段            → 精確到「小時」: 每小時快取自動失效
 
-    ★ auto_adjust=False: 保留原始未還原的 OHLCV 收盤價。
-      台股配息時 auto_adjust=True 會把歷史收盤價往下調整,導致波峰波谷
-      識別與 T_median 計算嚴重失真。
+    此 key 作為 fetch_data 的第三個參數傳入,讓 Streamlit 的 cache_data
+    在不同的 bucket 下視為不同呼叫 → 強制重新下載最新資料。
+    """
+    import pytz as _pytz
+    tw_now = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+    t = tw_now.time()
+    in_market = datetime.time(9, 0) <= t <= datetime.time(13, 35)
+    if in_market:
+        return tw_now.strftime('%Y%m%d_%H%M')  # 盤中: 每分鐘一個新 key
+    return tw_now.strftime('%Y%m%d_%H')         # 盤後: 每小時一個新 key
 
-    ★ 即時補丁已移至快取層外部:
-      過去把 _patch_today_price 放在此函式內,快取命中時補丁完全不執行。
-      現在補丁在 main() 的快取外部呼叫(fetch_data 之後、add_indicators 之前),
-      確保每次 Streamlit 重新執行都能更新今日現價。
 
-    快取 10 分鐘,避免頻繁打 Yahoo Finance 歷史 API。
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_data(ticker: str, period: str = "2y",
+               time_bucket: str = "") -> tuple[pd.DataFrame | None, str]:
+    """
+    以 yfinance 下載個股歷史日線資料。支援台股(自動補 .TW / .TWO)與美股。
+
+    ★ 動態快取 bucket 機制 (time_bucket):
+      Streamlit @st.cache_data 以「所有非底線開頭的參數」作為快取 key。
+      time_bucket 由 _get_cache_bucket() 產生:
+        - 盤中 09:00~13:35: 精確到「分鐘」→ 每分鐘快取失效,刷新即拿最新資料
+        - 盤後: 精確到「小時」→ 每小時失效,避免頻繁重複下載
+      ⚠️ 注意:參數名稱「不能」帶底線前綴,否則 Streamlit 會把它排除在
+              cache key 計算之外,導致 bucket 永遠不生效!
+
+    ★ auto_adjust=False: 保留原始未還原 OHLCV,避免台股除息後歷史價格失真。
+    ★ Close=NaN 修補: 優先用 fast_info.last_price,保底用 (H+L)/2。
+
+    快取 TTL=3600 秒(安全備用),實際由 time_bucket 控制失效頻率。
     """
     candidates = [ticker.upper()]
     t = ticker.strip().upper()
@@ -540,16 +560,10 @@ def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, st
             if "Close" not in df.columns and "Adj Close" in df.columns:
                 df = df.rename(columns={"Adj Close": "Close"})
 
-            # ★ Close=NaN 修補:yfinance 在當天有時回傳 Close=NaN 但 High/Low 有值
-            #   (如 6/22 南茂: Close=NaN Adj Close=NaN,導致 dropna 過濾掉最新一列)
-            #
-            #   修補順序:
-            #   ① fast_info.last_price — 盤中是即時現價,收盤後是當日正確收盤價
-            #                            優先使用,比 (H+L)/2 更準確
-            #   ② (High+Low)/2         — fast_info 失敗時的保底(至少保留當日K棒)
+            # ★ Close=NaN 修補
             if df["Close"].isna().any():
                 nan_mask = df["Close"].isna()
-                # ① 優先: fast_info.last_price(盤中/收盤後都是正確的)
+                # ① 優先: fast_info.last_price
                 try:
                     lp = float(getattr(yf.Ticker(cand).fast_info, 'last_price', 0) or 0)
                     if lp > 0:
@@ -558,7 +572,7 @@ def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, st
                             df.loc[nan_mask, "Adj Close"] = lp
                 except Exception:
                     pass
-                # ② 保底: (High+Low)/2 — 若 fast_info 仍失敗才用
+                # ② 保底: (High+Low)/2
                 still_nan = df["Close"].isna()
                 if still_nan.any() and "High" in df.columns and "Low" in df.columns:
                     df.loc[still_nan, "Close"] = (
@@ -568,7 +582,7 @@ def fetch_data(ticker: str, period: str = "2y") -> tuple[pd.DataFrame | None, st
             df = df.dropna(subset=["Close"])
             if len(df) >= 60:
                 df.index = pd.to_datetime(df.index)
-                return df, cand   # ← 純歷史資料,補丁在 main() 外層執行
+                return df, cand
         except Exception:
             continue
     return None, ticker
@@ -1636,7 +1650,7 @@ def _scan_one(ticker: str, period: str) -> dict | None:
     import time as _time
     for attempt in range(3):
         try:
-            df, used = fetch_data(ticker, period=period)
+            df, used = fetch_data(ticker, period=period, time_bucket=_get_cache_bucket())
             if df is None or len(df) < 60:
                 return None
 
@@ -2382,7 +2396,7 @@ def main():
                 sel_ticker = sel_row["input"]
 
                 with st.spinner(f"載入 {sel_row['代號']} 完整分析..."):
-                    df_sel, used_sel = fetch_data(sel_ticker, period=period)
+                    df_sel, used_sel = fetch_data(sel_ticker, period=period, time_bucket=_get_cache_bucket())
 
                 if df_sel is not None and len(df_sel) >= 60:
                     # ★ 補丁在 cache 外部執行
@@ -2471,7 +2485,7 @@ def main():
         return
 
     with st.spinner(f"正在下載「{ticker_raw}」近 {period} 日線資料..."):
-        df, used_ticker = fetch_data(ticker_raw, period=period)
+        df, used_ticker = fetch_data(ticker_raw, period=period, time_bucket=_get_cache_bucket())
 
     if df is None or len(df) < 60:
         st.error(
