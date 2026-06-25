@@ -1058,67 +1058,75 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_chip_data(ticker: str) -> dict:
     """
     抓取台股三大法人近 14 天籌碼資料 (FinMind，免費免註冊)。
 
-    資料來源: 台灣證交所/櫃買中心每日法人買賣超公告，由 FinMind 整理。
-    FinMind 免費版限速約 600 次/小時，每檔約 0.4 秒，單股分析完全夠用。
-    批量掃描不呼叫此函式(避免 100 檔連打造成逾時)。
+    ★ 修正:
+      - 移除 @st.cache_data: Streamlit Cloud 上 cache decorator 有時造成
+        函式體完全不執行或錯誤被靜默吞掉，改用 st.session_state 手動快取。
+      - 函式內部重新 try import: 不依賴模組層級的 _FINMIND_AVAILABLE，
+        確保即使初始化時 import 失敗，後續呼叫仍能重試。
+      - 詳細錯誤訊息: 讓 UI 顯示具體失敗原因。
 
-    代號處理:
-      - '2330.TW' → '2330'
-      - '6798.TWO' → '6798'  (FinMind 上市/上櫃都用純數字)
-      - 興櫃股(emerging) 法人資料有限，但欄位相同，容錯處理
+    手動快取策略: session_state["_chip_{ticker}_{date}"]，每天失效一次。
 
     回傳 dict:
-      fi_net_5d   : 外資近5日每日淨買超(張)列表 [d-4, d-3, d-2, d-1, today]
-      it_net_5d   : 投信近5日每日淨買超(張)列表
-      fi_3d_sum   : 外資近3日合計淨買超(張)
-      it_3d_sum   : 投信近3日合計淨買超(張)
-      it_buy_days : 投信近5日買超天數 (淨買超>0 的天數)
-      available   : bool — 資料取得成功
-      error       : 失敗原因(成功時為"")
+      fi_net_5d, it_net_5d, fi_3d_sum, it_3d_sum, it_buy_days, available, error
     """
     empty = dict(fi_net_5d=[], it_net_5d=[], fi_3d_sum=0.0,
                  it_3d_sum=0.0, it_buy_days=0, available=False, error="")
 
-    if not _FINMIND_AVAILABLE:
-        empty["error"] = "FinMind 未安裝"
+    # ── 手動快取 (session_state，每天失效) ────────────────────────────
+    today_key = datetime.date.today().strftime('%Y%m%d')
+    cache_key = f"_chip_{ticker}_{today_key}"
+    try:
+        cached = st.session_state.get(cache_key)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass  # session_state 不可用時直接繼續
+
+    # ── 函式內部重新 try import ────────────────────────────────────────
+    # 注意: pip package name 是 finmind (小寫)，但 Python import 路徑是 FinMind (大寫)
+    try:
+        from FinMind.data import DataLoader as _DL
+    except ImportError:
+        empty["error"] = "finmind 套件未安裝，請確認 requirements.txt 含 finmind>=2.0.0 並重新部署"
         return empty
 
     try:
+        import re as _re, pandas as _pd
+
         # 拔除後綴，只留純數字代號
-        stock_id = re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
+        stock_id = _re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
         if not stock_id.isdigit():
             empty["error"] = f"不支援的代號格式: {ticker}"
             return empty
 
         start = (datetime.date.today() - datetime.timedelta(days=20)).strftime('%Y-%m-%d')
-        dl = _FinMindDataLoader()
+
+        dl  = _DL()
         raw = dl.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start)
 
-        if raw.empty:
-            empty["error"] = "FinMind 無此股資料"
+        if raw is None or (hasattr(raw, 'empty') and raw.empty):
+            empty["error"] = f"FinMind 無 {stock_id} 的法人資料（可能為興櫃或新掛牌）"
             return empty
 
-        # 計算每日各法人淨買超(張)
         raw['net'] = (raw['buy'].astype(float) - raw['sell'].astype(float)) / 1000.0
         pivot = raw.pivot_table(
             index='date', columns='name', values='net', aggfunc='sum'
         ).fillna(0.0)
 
         fi = pivot.get('Foreign_Investor',
-                       pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
+                       _pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
         it = pivot.get('Investment_Trust',
-                       pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
+                       _pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
 
-        # 取最近5個交易日
         fi5 = fi.tail(5).tolist()
         it5 = it.tail(5).tolist()
 
-        return {
+        result = {
             "fi_net_5d":   fi5,
             "it_net_5d":   it5,
             "fi_3d_sum":   float(sum(fi5[-3:])) if len(fi5) >= 3 else 0.0,
@@ -1128,8 +1136,16 @@ def _fetch_chip_data(ticker: str) -> dict:
             "error":       "",
         }
 
+        # 存入 session_state 快取
+        try:
+            st.session_state[cache_key] = result
+        except Exception:
+            pass
+
+        return result
+
     except Exception as e:
-        empty["error"] = str(e)[:80]
+        empty["error"] = f"{type(e).__name__}: {str(e)[:120]}"
         return empty
 
 
@@ -3111,8 +3127,12 @@ def main():
         </div>
         """, unsafe_allow_html=True)
     else:
-        st.info(f"ℹ️ 籌碼資料暫時無法取得（{chip_raw.get('error', 'FinMind 未安裝')}），"
-                f"買點評估改以純技術面判斷。")
+        err_msg = chip_raw.get('error', '未知錯誤')
+        st.warning(
+            f"⚠️ 籌碼資料暫時無法取得（{err_msg}），買點評估改以純技術面判斷。\n\n"
+            f"**排查提示：** 請確認 `requirements.txt` 中有 `finmind>=2.0.0`（小寫），"
+            f"並在 Streamlit Cloud 重新部署讓套件重新安裝。"
+        )
 
     render_forward_table(rows, wr["close"])
 
