@@ -2304,6 +2304,562 @@ def html_scan_table(rows: list[dict], min_winrate: float = 0,
 #  Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  ★ 自選股系統 (業界下單頁面風格)
+#  儲存: st.session_state["watchlists"] — 5 個清單，每個最多 20 檔
+#  功能: 即時報價 / DNA分類 / 買點評估 / 籌碼 / JSON匯出入
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WL_KEY   = "watchlists"       # session_state 存放自選股的 key
+_WL_COUNT = 5                  # 自選股清單數量
+_WL_MAX   = 20                 # 每個清單最多幾檔
+
+
+def _wl_init():
+    """初始化自選股 session_state（若尚未存在）"""
+    if _WL_KEY not in st.session_state:
+        st.session_state[_WL_KEY] = {
+            i: {"name": f"自選股 {i}", "tickers": []}
+            for i in range(1, _WL_COUNT + 1)
+        }
+    if "_wl_active" not in st.session_state:
+        st.session_state["_wl_active"] = 1
+
+
+def _wl_get(idx: int) -> dict:
+    _wl_init()
+    return st.session_state[_WL_KEY][idx]
+
+
+def _wl_set_name(idx: int, name: str):
+    _wl_init()
+    st.session_state[_WL_KEY][idx]["name"] = name.strip() or f"自選股 {idx}"
+
+
+def _wl_add_ticker(idx: int, ticker: str) -> tuple[bool, str]:
+    """新增代號到自選股，回傳 (成功, 訊息)"""
+    _wl_init()
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return False, "請輸入代號"
+    wl = st.session_state[_WL_KEY][idx]
+    # 標準化: 純數字自動補 .TW
+    if ticker.isdigit():
+        ticker = f"{ticker}.TW"
+    if ticker in wl["tickers"]:
+        return False, f"{ticker} 已在清單中"
+    if len(wl["tickers"]) >= _WL_MAX:
+        return False, f"每個清單最多 {_WL_MAX} 檔"
+    wl["tickers"].append(ticker)
+    return True, f"✅ 已加入 {ticker}"
+
+
+def _wl_remove_ticker(idx: int, ticker: str):
+    _wl_init()
+    try:
+        st.session_state[_WL_KEY][idx]["tickers"].remove(ticker)
+    except ValueError:
+        pass
+
+
+def _wl_move_ticker(idx: int, ticker: str, direction: int):
+    """上移(-1)/下移(+1)"""
+    _wl_init()
+    tickers = st.session_state[_WL_KEY][idx]["tickers"]
+    i = tickers.index(ticker)
+    j = i + direction
+    if 0 <= j < len(tickers):
+        tickers[i], tickers[j] = tickers[j], tickers[i]
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _wl_fetch_quote(ticker: str, _bucket: str = "") -> dict:
+    """
+    抓取單檔即時報價（快取 60 秒，盤中每分鐘更新）。
+    回傳: price, chg_pct, volume, prev_close, high, low
+    """
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = float(getattr(fi, 'last_price', 0) or 0)
+        prev  = float(getattr(fi, 'regular_market_previous_close', price) or price)
+        chg   = (price - prev) / prev * 100 if prev > 0 else 0.0
+        return {
+            "price":    round(price, 2),
+            "chg_pct":  round(chg, 2),
+            "volume":   int(getattr(fi, 'last_volume', 0) or 0),
+            "prev":     round(prev, 2),
+            "high":     round(float(getattr(fi, 'day_high', price) or price), 2),
+            "low":      round(float(getattr(fi, 'day_low',  price) or price), 2),
+            "ok":       True,
+        }
+    except Exception:
+        return {"price": 0, "chg_pct": 0, "volume": 0, "prev": 0,
+                "high": 0, "low": 0, "ok": False}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _wl_scan_one(ticker: str, period: str, _bucket: str = "") -> dict | None:
+    """
+    對單一自選股做 DNA + 買點 + 籌碼完整掃描（快取 10 分鐘）。
+    比 _scan_one 多了籌碼評估，專門給自選股看板用。
+    """
+    try:
+        df, used = fetch_data(ticker, period=period, time_bucket=_get_cache_bucket())
+        if df is None or len(df) < 60:
+            return None
+        df  = add_indicators(df)
+        dna = detect_wave_dna(df)
+        wr  = compute_winrate(dna, df)
+
+        # 籌碼（自選股掃描才打 FinMind，批量掃描不打）
+        chip_raw  = _fetch_chip_data(used)
+        chip_eval = evaluate_chip(chip_raw)
+
+        # 買點評估（含籌碼第⑥條件）
+        entry = evaluate_entry_point(dna, wr, df, chip=chip_eval)
+
+        # 前瞻 D+1 下限
+        rows   = generate_forward_matrix(df, wr, dna, n_days=2)
+        d1_low = rows[0]['下限參考'] if rows else None
+
+        last = df.iloc[-1]
+        return {
+            "代號":       used,
+            "股名":       get_stock_name(used),
+            "收盤價":     round(float(last["Close"]), 2),
+            "勝率":       round(wr["winrate"] * 100, 1),
+            "分類":       wr["category_label"],
+            "category":   wr["category"],
+            "R_cycle":    round(dna["R_cycle"], 3),
+            "T_median":   dna["T_median"],
+            "D_current":  dna["D_current"],
+            "均線型態":   wr["desc_ma"],
+            "KD狀態":     wr["desc_kd"],
+            "K9":         wr["k9"],
+            "D9":         wr["d9"],
+            "量比":       wr["vol_ratio"],
+            "買點分數":   entry["score"],
+            "買點訊號":   entry["signal"],
+            "KD拐頭":     entry["kd_stage"],
+            "籌碼標籤":   chip_eval["label"],
+            "籌碼加分":   chip_eval["boost"],
+            "籌碼否決":   chip_eval["veto"],
+            "籌碼說明":   chip_eval["detail"],
+            "it_buy_days": chip_raw.get("it_buy_days", 0),
+            "fi_3d_sum":  chip_raw.get("fi_3d_sum", 0.0),
+            "it_3d_sum":  chip_raw.get("it_3d_sum", 0.0),
+            "D1下限":     d1_low,
+            "chart_url":  get_chart_url(used),
+        }
+    except Exception:
+        return None
+
+
+def render_watchlist_page(period: str = "2y"):
+    """
+    ★ 自選股看板主體 — 業界下單軟體風格
+    ─────────────────────────────────────────────────────────────────────────
+    Layout:
+      左側 Tab × 5 → 右側即時報價表格 + 操作列
+      底部: 「一鍵掃描」→ DNA/買點/籌碼完整看板
+    """
+    _wl_init()
+    bucket = _get_cache_bucket()
+
+    st.markdown('<div class="section-title">⭐ 自選股看板</div>', unsafe_allow_html=True)
+
+    # ── JSON 匯入匯出 ──────────────────────────────────────────────────
+    with st.expander("💾 匯入 / 匯出自選股設定", expanded=False):
+        col_exp, col_imp = st.columns(2)
+        with col_exp:
+            import json as _json
+            wl_data = st.session_state[_WL_KEY]
+            json_str = _json.dumps(
+                {str(k): v for k, v in wl_data.items()},
+                ensure_ascii=False, indent=2
+            )
+            st.download_button(
+                "⬇️ 匯出 JSON", data=json_str,
+                file_name="watchlist.json", mime="application/json",
+                use_container_width=True
+            )
+        with col_imp:
+            uploaded = st.file_uploader("⬆️ 匯入 JSON", type=["json"], label_visibility="collapsed")
+            if uploaded:
+                try:
+                    loaded = _json.loads(uploaded.read())
+                    for k, v in loaded.items():
+                        idx = int(k)
+                        if 1 <= idx <= _WL_COUNT:
+                            st.session_state[_WL_KEY][idx] = v
+                    st.success("✅ 匯入成功")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 匯入失敗: {e}")
+
+    # ── 五個自選股 Tab ──────────────────────────────────────────────────
+    wl_names = [st.session_state[_WL_KEY][i]["name"] for i in range(1, _WL_COUNT + 1)]
+    tabs = st.tabs([f"{'★ ' if i+1 == st.session_state['_wl_active'] else ''}{name}"
+                    for i, name in enumerate(wl_names)])
+
+    for tab_idx, tab in enumerate(tabs):
+        wl_no = tab_idx + 1
+        wl    = _wl_get(wl_no)
+
+        with tab:
+            st.session_state["_wl_active"] = wl_no
+
+            # ── 清單標題編輯 ──────────────────────────────────────────
+            c_name, c_add, c_scan = st.columns([3, 2, 2])
+            with c_name:
+                new_name = st.text_input(
+                    f"清單名稱", value=wl["name"],
+                    key=f"wl_name_{wl_no}", label_visibility="collapsed"
+                )
+                if new_name != wl["name"]:
+                    _wl_set_name(wl_no, new_name)
+                    st.rerun()
+
+            with c_add:
+                add_ticker = st.text_input(
+                    "新增代號", placeholder="2330 / AAPL",
+                    key=f"wl_add_{wl_no}", label_visibility="collapsed"
+                )
+                if st.button("➕ 加入", key=f"wl_add_btn_{wl_no}", use_container_width=True):
+                    ok, msg = _wl_add_ticker(wl_no, add_ticker)
+                    if ok:
+                        st.toast(msg, icon="⭐")
+                    else:
+                        st.warning(msg)
+                    st.rerun()
+
+            with c_scan:
+                do_scan = st.button(
+                    f"🔬 一鍵掃描 ({len(wl['tickers'])} 檔)",
+                    key=f"wl_scan_{wl_no}",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=len(wl["tickers"]) == 0
+                )
+
+            # ── 即時報價表格 ──────────────────────────────────────────
+            if not wl["tickers"]:
+                st.markdown("""
+                <div style="text-align:center;padding:40px;color:#7a9bbf;font-size:14px;">
+                  ℹ️ 此清單尚無股票。輸入代號後按「➕ 加入」。<br>
+                  <span style="font-size:12px;">台股輸入數字(如 2330)，美股輸入英文(如 AAPL)</span>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # 即時報價 HTML 表格
+                quote_rows = ""
+                for ticker in wl["tickers"]:
+                    q    = _wl_fetch_quote(ticker, _bucket=bucket)
+                    name = get_stock_name(ticker)
+                    url  = get_chart_url(ticker)
+                    chg  = q["chg_pct"]
+                    chg_color = "#0a7c59" if chg > 0 else "#c0392b" if chg < 0 else "#666"
+                    chg_str   = f"{chg:+.2f}%"
+                    price_str = f"{q['price']:.2f}" if q['ok'] else "--"
+                    vol_str   = f"{q['volume']//1000:,}張" if q['ok'] and q['volume'] > 0 else "--"
+
+                    safe_title = f"{name}({ticker})".replace("'", " ")
+                    quote_rows += f"""
+                    <tr>
+                      <td style="text-align:center;">
+                        <button onclick="(function(){{
+                          document.querySelectorAll('[data-testid=stTextInput] input').forEach(function(el){{
+                            if(el.placeholder && el.placeholder.includes('2330'))
+                              el.value='{ticker}';
+                          }})
+                        }})()" style="background:none;border:none;cursor:pointer;
+                          font-size:11px;color:#1565c0;">▶</button>
+                      </td>
+                      <td>
+                        <a href="{url}" target="_blank" style="color:#1565c0;font-weight:700;
+                          font-family:'IBM Plex Mono',monospace;text-decoration:none;
+                          font-size:14px;">{ticker}</a>
+                      </td>
+                      <td style="color:#1a2b3c;font-size:13px;">{name}</td>
+                      <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                          font-size:15px;color:#1a2b3c;">{price_str}</td>
+                      <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                          color:{chg_color};font-size:14px;">{chg_str}</td>
+                      <td style="color:#4a6fa5;font-size:12px;">{vol_str}</td>
+                      <td style="color:#4a6fa5;font-size:12px;">
+                        H {q['high']:.2f} / L {q['low']:.2f}
+                      </td>
+                      <td style="text-align:center;">
+                        <button onclick="openChart('{url}','{safe_title}')"
+                          style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:5px;
+                          padding:2px 8px;cursor:pointer;font-size:13px;color:#1565c0;">📈</button>
+                      </td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <div id="chartModal_wl" onclick="if(event.target===this){{this.style.display='none';document.getElementById('chartFrame_wl').src='';}}"
+                     style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+                     background:rgba(0,0,0,0.72);z-index:9999;align-items:center;justify-content:center;">
+                  <div style="background:#fff;border-radius:14px;width:90%;max-width:1100px;
+                              height:82vh;overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.45);">
+                    <div style="display:flex;align-items:center;justify-content:space-between;
+                                padding:12px 18px;background:#1565c0;color:#fff;">
+                      <span id="chartTitle_wl" style="font-weight:700;font-size:16px;"></span>
+                      <button onclick="document.getElementById('chartModal_wl').style.display='none';
+                                       document.getElementById('chartFrame_wl').src='';"
+                              style="background:rgba(255,255,255,.2);border:none;color:#fff;
+                                     font-size:18px;cursor:pointer;border-radius:6px;padding:4px 10px;">✕</button>
+                    </div>
+                    <iframe id="chartFrame_wl" src="" style="width:100%;height:calc(82vh - 52px);border:none;"></iframe>
+                  </div>
+                </div>
+                <script>
+                function openChart(url, title) {{
+                    document.getElementById('chartFrame_wl').src = url;
+                    document.getElementById('chartTitle_wl').textContent = title;
+                    document.getElementById('chartModal_wl').style.display = 'flex';
+                }}
+                </script>
+                <table style="width:100%;border-collapse:collapse;font-size:14px;">
+                  <thead>
+                    <tr style="background:#1565c0;color:#fff;">
+                      <th style="padding:8px;width:32px;"></th>
+                      <th style="padding:8px;text-align:left;min-width:100px;">代號</th>
+                      <th style="padding:8px;text-align:left;min-width:80px;">股名</th>
+                      <th style="padding:8px;text-align:right;min-width:80px;">現價</th>
+                      <th style="padding:8px;text-align:right;min-width:75px;">漲跌幅</th>
+                      <th style="padding:8px;text-align:right;min-width:75px;">成交量</th>
+                      <th style="padding:8px;text-align:center;min-width:120px;">今日區間</th>
+                      <th style="padding:8px;text-align:center;width:42px;">線型</th>
+                    </tr>
+                  </thead>
+                  <tbody>{quote_rows}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+                # ── 刪除操作列 ────────────────────────────────────────
+                st.markdown('<div style="margin-top:10px;font-size:12px;color:#7a9bbf;">刪除股票：</div>',
+                            unsafe_allow_html=True)
+                del_cols = st.columns(min(len(wl["tickers"]), 5))
+                for i, (col, ticker) in enumerate(zip(del_cols, wl["tickers"][:5])):
+                    with col:
+                        if st.button(f"✕ {ticker}", key=f"del_{wl_no}_{ticker}_{i}",
+                                     use_container_width=True):
+                            _wl_remove_ticker(wl_no, ticker)
+                            st.rerun()
+                if len(wl["tickers"]) > 5:
+                    del_cols2 = st.columns(min(len(wl["tickers"]) - 5, 5))
+                    for i, (col, ticker) in enumerate(zip(del_cols2, wl["tickers"][5:10])):
+                        with col:
+                            if st.button(f"✕ {ticker}", key=f"del2_{wl_no}_{ticker}_{i}",
+                                         use_container_width=True):
+                                _wl_remove_ticker(wl_no, ticker)
+                                st.rerun()
+
+            # ── 一鍵掃描結果 ─────────────────────────────────────────
+            if do_scan and wl["tickers"]:
+                st.markdown(f"""
+                <div class="section-title">🔬 {wl['name']} — DNA × 買點 × 籌碼 完整掃描</div>
+                """, unsafe_allow_html=True)
+
+                prog = st.progress(0.0, text="⏳ 掃描中...")
+                results = []
+                total   = len(wl["tickers"])
+
+                for i, ticker in enumerate(wl["tickers"]):
+                    prog.progress((i + 1) / total,
+                                  text=f"⏳ 分析 {ticker}（{i+1}/{total}）...")
+                    r = _wl_scan_one(ticker, period, _bucket=bucket)
+                    if r:
+                        results.append(r)
+
+                prog.empty()
+
+                if not results:
+                    st.warning("⚠️ 所有股票掃描失敗，請確認代號是否正確")
+                else:
+                    # 依買點分數排序
+                    results.sort(key=lambda x: x["買點分數"], reverse=True)
+                    _render_wl_scan_table(results)
+
+
+def _render_wl_scan_table(results: list):
+    """
+    自選股掃描結果表格 — 整合 DNA + 買點獵人 + 三大法人
+    比一般掃描表格多顯示: 籌碼標籤 / 外資投信動向 / D+1掛單下限
+    """
+    bar_color = {"top": "#0a7c59", "mid": "#d97706", "warn": "#c0392b"}
+    modal_js = """
+    <div id="scanModal" onclick="if(event.target===this){this.style.display='none';document.getElementById('scanFrame').src='';}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+         background:rgba(0,0,0,0.72);z-index:9999;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:14px;width:90%;max-width:1100px;
+                  height:82vh;overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.45);">
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:12px 18px;background:#1565c0;color:#fff;">
+          <span id="scanTitle" style="font-weight:700;font-size:16px;"></span>
+          <button onclick="document.getElementById('scanModal').style.display='none';
+                           document.getElementById('scanFrame').src='';"
+                  style="background:rgba(255,255,255,.2);border:none;color:#fff;
+                         font-size:18px;cursor:pointer;border-radius:6px;padding:4px 10px;">✕</button>
+        </div>
+        <iframe id="scanFrame" src="" style="width:100%;height:calc(82vh - 52px);border:none;"></iframe>
+      </div>
+    </div>
+    <script>
+    function openScan(url, title) {
+        document.getElementById('scanFrame').src = url;
+        document.getElementById('scanTitle').textContent = title;
+        document.getElementById('scanModal').style.display = 'flex';
+    }
+    </script>"""
+
+    rows_html = ""
+    for i, r in enumerate(results, 1):
+        cat   = r["category"]
+        bc    = bar_color.get(cat, "#1565c0")
+        wr    = r["勝率"]
+        score = r["買點分數"]
+        signal = r["買點訊號"]
+        code  = r["代號"]
+        name  = r.get("股名", "")
+        url   = r.get("chart_url", get_chart_url(code))
+        safe_title = f"{name}({code})".replace("'", " ")
+
+        # 買點分數顏色
+        sc_color = ("#c0392b" if "共振" in signal
+                    else "#0a7c59" if score >= 80
+                    else "#1565c0" if score >= 65
+                    else "#d97706" if score >= 50
+                    else "#9e9e9e")
+
+        # 分類標籤
+        cat_badge = {
+            "top":  '<span style="background:#0a7c59;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">🚀頂級</span>',
+            "mid":  '<span style="background:#d97706;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">⏳蓄勢</span>',
+            "warn": '<span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;">🛑警戒</span>',
+        }.get(cat, r["分類"])
+
+        # 籌碼顏色
+        chip_lbl   = r["籌碼標籤"]
+        chip_color = ("#c0392b" if "共振" in chip_lbl or "倒貨" in chip_lbl
+                      else "#0a7c59" if "認養" in chip_lbl or "共振" in chip_lbl
+                      else "#d97706" if "佈局" in chip_lbl
+                      else "#9e9e9e")
+
+        # 外資/投信動向
+        it_d   = r["it_buy_days"]
+        fi_3d  = r["fi_3d_sum"]
+        it_3d  = r["it_3d_sum"]
+        it_str = f"投信{it_d}/5天"
+        fi_str = f"外資{fi_3d:+.0f}張"
+
+        # D+1掛單下限
+        d1 = r.get("D1下限")
+        d1_str = f"{d1:.2f}" if d1 else "--"
+
+        # R_cycle 顏色
+        rc       = r["R_cycle"]
+        rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+
+        row_bg = "background:#f7fafd;" if i % 2 == 0 else "background:#ffffff;"
+
+        rows_html += f"""
+        <tr style="{row_bg}">
+          <td style="color:#7a9bbf;text-align:center;font-size:12px;">{i}</td>
+          <td>
+            <a href="{url}" target="_blank"
+               style="color:#1565c0;font-weight:700;font-size:14px;
+                      font-family:'IBM Plex Mono',monospace;text-decoration:none;">{code}</a>
+          </td>
+          <td style="color:#1a2b3c;font-size:13px;">{name}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                     font-size:15px;color:#1a2b3c;">{r['收盤價']}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:55px;background:#c8d8e8;border-radius:4px;height:8px;overflow:hidden;">
+                <div style="width:{min(wr,100):.0f}%;height:8px;background:{bc};border-radius:4px;"></div>
+              </div>
+              <span style="color:{bc};font-weight:700;font-size:13px;">{wr:.0f}%</span>
+            </div>
+          </td>
+          <td>{cat_badge}</td>
+          <td style="color:{rc_color};font-weight:700;font-size:13px;
+                     font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+          <td>
+            <div style="font-size:13px;font-weight:700;color:{sc_color};">{score}分</div>
+            <div style="font-size:11px;color:{sc_color};">{signal}</div>
+          </td>
+          <td style="font-size:12px;color:{chip_color};font-weight:600;">{chip_lbl}</td>
+          <td>
+            <div style="font-size:12px;color:{'#0a7c59' if it_d>=3 else '#4a6fa5'};">{it_str}</div>
+            <div style="font-size:12px;color:{'#0a7c59' if fi_3d>0 else '#c0392b'};">{fi_str}</div>
+          </td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                     color:#1565c0;font-weight:600;">{d1_str}</td>
+          <td style="text-align:center;">
+            <button onclick="openScan('{url}','{safe_title}')"
+              style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:5px;
+                     padding:3px 8px;cursor:pointer;font-size:13px;color:#1565c0;">📈</button>
+          </td>
+        </tr>"""
+
+    table_html = f"""
+    {modal_js}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:#1565c0;color:#fff;font-size:12px;">
+          <th style="padding:8px;width:32px;">#</th>
+          <th style="padding:8px;text-align:left;min-width:90px;">代號</th>
+          <th style="padding:8px;text-align:left;min-width:70px;">股名</th>
+          <th style="padding:8px;text-align:left;min-width:75px;">收盤價</th>
+          <th style="padding:8px;text-align:left;min-width:100px;">波段勝率</th>
+          <th style="padding:8px;text-align:left;min-width:65px;">分類</th>
+          <th style="padding:8px;text-align:left;min-width:70px;">R_cycle</th>
+          <th style="padding:8px;text-align:left;min-width:80px;">買點評估</th>
+          <th style="padding:8px;text-align:left;min-width:100px;">籌碼動態</th>
+          <th style="padding:8px;text-align:left;min-width:100px;">法人動向</th>
+          <th style="padding:8px;text-align:center;min-width:75px;">D+1下限</th>
+          <th style="padding:8px;width:42px;">線型</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>"""
+
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    # 手機卡片版
+    cards_html = '<div class="mobile-cards">'
+    for i, r in enumerate(results, 1):
+        code  = r["代號"]
+        name  = r.get("股名", "")
+        url   = r.get("chart_url", get_chart_url(code))
+        score = r["買點分數"]
+        cat   = r["category"]
+        bc    = bar_color.get(cat, "#1565c0")
+        sc_color = ("#0a7c59" if score >= 80 else "#1565c0" if score >= 65
+                    else "#d97706" if score >= 50 else "#9e9e9e")
+        cards_html += f"""
+        <div class="scan-card">
+          <div class="sc-header">
+            <div>
+              <a href="{url}" target="_blank" class="sc-code">#{i} {code}</a>
+              <span class="sc-name">{" · " + name if name else ""}</span>
+            </div>
+            <span style="font-size:13px;font-weight:700;color:{sc_color};">{score}分 {r['買點訊號']}</span>
+          </div>
+          <div class="sc-meta">
+            <span>勝率 <b style="color:{bc};">{r['勝率']:.0f}%</b></span>
+            <span>R {r['R_cycle']:.3f}</span>
+            <span>{r['籌碼標籤']}</span>
+            <span>D+1下限 <b>{r.get('D1下限','--')}</b></span>
+          </div>
+          <div class="sc-desc">{r['均線型態'][:25]}</div>
+        </div>"""
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("""
@@ -2318,7 +2874,7 @@ def render_sidebar():
         # ── 模式切換 ──────────────────────────────────────────────────────
         mode = st.radio(
             "分析模式",
-            ["🔍 單股分析", "📡 批量掃描"],
+            ["🔍 單股分析", "⭐ 自選股", "📡 批量掃描"],
             horizontal=True,
         )
 
@@ -2329,6 +2885,12 @@ def render_sidebar():
                 "股票代號", value="8150",
                 placeholder="台股: 2330 / 8150  美股: AAPL",
                 help="台股輸入數字代號即可(自動補 .TW),美股輸入英文代號"
+            )
+        elif mode == "⭐ 自選股":
+            ticker = ""
+            st.markdown(
+                '<div style="font-size:12px;color:#4a6fa5;margin:6px 0;">管理您的 5 組自選股清單</div>',
+                unsafe_allow_html=True
             )
         else:
             ticker = ""
@@ -2396,6 +2958,14 @@ def render_sidebar():
 
         if mode == "🔍 單股分析":
             analyze = st.button("🔍 開始 DNA 分析", use_container_width=True, type="primary")
+            scan    = False
+            custom_raw = ""
+            min_wr  = 70
+            use_hot100 = True
+            scan_mode = "📊 高勝率標的 (≥門檻)"
+            min_entry_score = 0
+        elif mode == "⭐ 自選股":
+            analyze = False
             scan    = False
             custom_raw = ""
             min_wr  = 70
@@ -2616,6 +3186,13 @@ def main():
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    #  模式 ⭐: 自選股看板
+    # ════════════════════════════════════════════════════════════════════
+    if mode == "⭐ 自選股":
+        render_watchlist_page(period=period)
+        return
 
     # ════════════════════════════════════════════════════════════════════
     #  模式 A: 批量掃描
