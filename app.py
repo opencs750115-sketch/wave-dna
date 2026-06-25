@@ -1571,91 +1571,135 @@ TW_ELECTRONIC_759 = [
 _REALTIME_NAME_CACHE: dict[str, str] = {}
 
 
+def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
+    """
+    用 curl_cffi 模擬 Chrome 瀏覽器指紋 + 完整 Cookie Session 抓取
+    Yahoo Finance Screener 資料。
+
+    為何不用 yf.screen():
+      Streamlit Community Cloud 的共享 IP 因為大量用戶同時使用 yfinance
+      打 Yahoo API,Yahoo 把這些 IP 識別為機器人流量並限流(429)。
+      curl_cffi 模擬完整的 Chrome 瀏覽器 TLS 指紋 + 先取 Cookie Session
+      再打 API,Yahoo 無法區分真實用戶和程式,因此不會被限流。
+
+    正確流程:
+      1. GET finance.yahoo.com → 建立合法 Cookie Session
+      2. GET /v1/test/getcrumb → 取得 API 認證用 crumb token
+      3. POST /v1/finance/screener → 帶入 crumb + Cookie 抓取資料
+    """
+    try:
+        from curl_cffi.requests import Session as CffiSession
+        with CffiSession(impersonate="chrome124") as s:
+            # Step 1: 建立 Cookie Session
+            s.get("https://finance.yahoo.com/",
+                  timeout=10,
+                  headers={'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8'})
+
+            # Step 2: 取得 crumb
+            cr = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=8)
+            crumb = cr.text.strip() if cr.status_code == 200 else ""
+
+            # Fallback: 換 query2
+            if not crumb or '{' in crumb:
+                cr2 = s.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=8)
+                crumb = cr2.text.strip() if cr2.status_code == 200 else ""
+
+            if not crumb or '{' in crumb:
+                return []
+
+            # Step 3: 呼叫 Screener
+            url  = (f"https://query1.finance.yahoo.com/v1/finance/screener"
+                    f"?formatted=false&lang=zh-TW&region=TW&crumb={crumb}")
+            body = {
+                "offset": 0, "size": size,
+                "sortField": "dayvolume", "sortType": "DESC",
+                "quoteType": "EQUITY",
+                "query": {
+                    "operator": "AND",
+                    "operands": [{"operator": "EQ", "operands": ["exchange", exchange]}]
+                },
+                "userId": "", "userIdType": "guid"
+            }
+            resp = s.post(url, json=body, timeout=15)
+            if resp.status_code == 200:
+                return (resp.json()
+                        .get('finance', {})
+                        .get('result', [{}])[0]
+                        .get('quotes', []))
+    except Exception:
+        pass
+    return []
+
+
 def fetch_tw_realtime_hot(
     rank_type: str = 'volume',
     size: int = 100,
     min_price: float = 5.0,
     min_vol: int = 500_000,
-) -> tuple[list[str], list[dict]]:
+) -> tuple[list[str], list[dict], bool, str]:
     """
     即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行。
 
-    ★ 修正 A — 漲跌幅排行問題:
-      改用「一律先依 dayvolume 抓 240 筆 → 過濾掉非4位代號 → 再依目標排序」。
-      原本直接用 percentchange 排序時,前240筆全是認股權(漲幅300~900%),
-      真正的股票全被擠到後面,導致過濾後0筆。
+    ★ 底層改用 _fetch_screener_cffi:
+      curl_cffi 模擬 Chrome 指紋 + Cookie Session,解決 Streamlit Cloud
+      共享 IP 被 Yahoo 限流(429)的根本問題。yf.screen() 只作為備用。
 
-    ★ 修正 B — min_vol 從 100萬 降至 50萬:
-      讓中小型股也能被納入漲跌幅排行(成交量100萬以上的台股並不多)。
-
-    rank_type:
-      'volume'  — 今日成交量最大(量能最強)
-      'gain'    — 今日漲幅最大(強勢股)
-      'loss'    — 今日跌幅最大(弱勢/超跌反彈)
-
-    過濾條件:
-      - 代號必須是純 4 位數字 (排除認股權6位/選擇權7位)
-      - 股價 >= min_price 元
-      - 成交量 >= min_vol 股
+    回傳: (tickers, meta_list, success: bool, message: str)
+      success=False 時呼叫端應自動切換靜態清單
     """
     global _REALTIME_NAME_CACHE
 
-    if not _EQUITY_QUERY_AVAILABLE:
-        return [], []
-
     all_quotes = []
-    for exchange in ['TAI', 'TWO']:
-        try:
-            q = EquityQuery('eq', ['exchange', exchange])
-            # ★ 一律先依成交量排序取 240 筆(Yahoo API 上限),確保取到足夠多的正規股票
-            result = yf.screen(q, sortField='dayvolume', sortAsc=False, size=240)
-            quotes = result.get('quotes', [])
-            all_quotes.extend(quotes)
+    failed_exchanges = []
 
-            # 同步更新即時名稱快取
+    for exchange in ['TAI', 'TWO']:
+        quotes = []
+
+        # 方法一: curl_cffi + cookie session (主要方式)
+        quotes = _fetch_screener_cffi(exchange, 240)
+
+        # 方法二: yf.screen() 備用
+        if not quotes and _EQUITY_QUERY_AVAILABLE:
+            try:
+                q = EquityQuery('eq', ['exchange', exchange])
+                result = yf.screen(q, sortField='dayvolume', sortAsc=False, size=240)
+                quotes = result.get('quotes', [])
+            except Exception:
+                pass
+
+        if quotes:
+            all_quotes.extend(quotes)
             for quote in quotes:
                 sym   = quote.get('symbol', '')
                 sname = quote.get('shortName', '') or quote.get('longName', '')
                 if sym and sname:
                     _REALTIME_NAME_CACHE[sym] = sname
+        else:
+            failed_exchanges.append(exchange)
 
-        except Exception as e:
-            try:
-                import streamlit as _st
-                _st.warning(f"⚠️ {exchange} 排行抓取失敗: {e}")
-            except Exception:
-                pass
+    if len(failed_exchanges) == 2:
+        return [], [], False, "Yahoo Screener 暫時無法連線，已自動切換靜態清單"
 
-    # 過濾:只留 4 位數字代號的普通股
+    # 過濾純4位數字代號
     filtered = []
     for q in all_quotes:
-        sym = q.get('symbol', '')
+        sym  = q.get('symbol', '')
         code = sym[:-4] if sym.endswith('.TWO') else sym[:-3] if sym.endswith('.TW') else sym
-
         price = float(q.get('regularMarketPrice', 0) or 0)
         vol   = int(q.get('regularMarketVolume', 0) or 0)
-
         if re.match(r'^\d{4}$', code) and price >= min_price and vol >= min_vol:
             filtered.append(q)
 
-    # ★ 過濾完畢後,依目標排行類型排序
     if rank_type == 'gain':
-        filtered.sort(
-            key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0),
-            reverse=True
-        )
+        filtered.sort(key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0),
+                      reverse=True)
     elif rank_type == 'loss':
-        filtered.sort(
-            key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0)
-        )
-    else:  # volume
-        filtered.sort(
-            key=lambda x: int(x.get('regularMarketVolume', 0) or 0),
-            reverse=True
-        )
+        filtered.sort(key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0))
+    else:
+        filtered.sort(key=lambda x: int(x.get('regularMarketVolume', 0) or 0),
+                      reverse=True)
 
-    filtered = filtered[:size]
-
+    filtered  = filtered[:size]
     tickers   = [q['symbol'] for q in filtered]
     meta_list = [
         {
@@ -1668,7 +1712,8 @@ def fetch_tw_realtime_hot(
         for q in filtered
     ]
 
-    return tickers, meta_list
+    partial = f"（{'/'.join(failed_exchanges)} 部分資料缺失）" if failed_exchanges else ""
+    return tickers, meta_list, True, f"成功取得 {len(tickers)} 筆{partial}"
 
 
 TW_HOT_100 = [
@@ -2389,26 +2434,45 @@ def main():
             custom_tickers = [t.strip().upper() for t in raw_list if t.strip()]
 
         # ── 選擇/抓取預設清單 ─────────────────────────────────────────
-        realtime_meta = []   # 即時排行的元資料(供顯示用)
+        realtime_meta = []
         is_realtime   = False
+        fallback_used = False   # 是否已降級到靜態清單
 
         if "即時成交量排行" in scan_universe:
             with st.spinner("⏳ 正在抓取 Yahoo Finance 今日成交量排行..."):
-                preset_list, realtime_meta = fetch_tw_realtime_hot('volume', 100)
-            is_realtime = True
-            rank_label  = "📊 今日成交量排行"
+                preset_list, realtime_meta, ok, msg = fetch_tw_realtime_hot('volume', 100)
+            if ok and preset_list:
+                is_realtime = True
+                rank_label  = "📊 今日成交量排行"
+            else:
+                preset_list  = TW_HOT_100
+                rank_label   = "⭐ 台灣熱門100檔（自動降級）"
+                fallback_used = True
+                st.info(f"ℹ️ 即時排行暫時無法取得（{msg}），已自動切換為靜態熱門100檔清單。")
 
         elif "即時漲幅排行" in scan_universe:
             with st.spinner("⏳ 正在抓取 Yahoo Finance 今日漲幅排行..."):
-                preset_list, realtime_meta = fetch_tw_realtime_hot('gain', 100)
-            is_realtime = True
-            rank_label  = "📈 今日漲幅排行"
+                preset_list, realtime_meta, ok, msg = fetch_tw_realtime_hot('gain', 100)
+            if ok and preset_list:
+                is_realtime = True
+                rank_label  = "📈 今日漲幅排行"
+            else:
+                preset_list  = TW_HOT_100
+                rank_label   = "⭐ 台灣熱門100檔（自動降級）"
+                fallback_used = True
+                st.info(f"ℹ️ 即時排行暫時無法取得（{msg}），已自動切換為靜態熱門100檔清單。")
 
         elif "即時跌幅排行" in scan_universe:
             with st.spinner("⏳ 正在抓取 Yahoo Finance 今日跌幅排行..."):
-                preset_list, realtime_meta = fetch_tw_realtime_hot('loss', 100)
-            is_realtime = True
-            rank_label  = "📉 今日跌幅排行"
+                preset_list, realtime_meta, ok, msg = fetch_tw_realtime_hot('loss', 100)
+            if ok and preset_list:
+                is_realtime = True
+                rank_label  = "📉 今日跌幅排行"
+            else:
+                preset_list  = TW_HOT_100
+                rank_label   = "⭐ 台灣熱門100檔（自動降級）"
+                fallback_used = True
+                st.info(f"ℹ️ 即時排行暫時無法取得（{msg}），已自動切換為靜態熱門100檔清單。")
 
         elif "全市場759" in scan_universe or "電子股759" in scan_universe:
             preset_list = TW_ELECTRONIC_759
