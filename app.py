@@ -1065,26 +1065,31 @@ def _fetch_chip_data(ticker: str) -> dict:
     ★ 數據來源: FinMind 免費 REST API（不安裝 finmind 套件）
       URL: https://api.finmindtrade.com/api/v4/data
       完全免費、免註冊、免 token，只需要 requests（Streamlit 內建依賴）。
-      避免了 finmind 套件與 Streamlit Cloud 環境的依賴版本衝突問題。
 
-    手動快取: st.session_state，當天內重複查詢直接回傳快取結果。
+    ★ v2 新增: fi_net_daily / it_net_daily — 近10天每日明細 dict
+      供彈窗顯示「近10天三大法人買賣超」用。
 
     回傳 dict:
-      fi_net_5d, it_net_5d : 外資/投信近5日每日淨買超(張)
-      fi_3d_sum, it_3d_sum : 外資/投信近3日合計淨買超(張)
-      it_buy_days          : 投信近5日買超天數
-      available            : bool
-      error                : 失敗原因
+      fi_net_5d, it_net_5d  : 近5日每日淨買超(張)
+      fi_net_daily          : {日期: 外資淨買超} — 近10天
+      it_net_daily          : {日期: 投信淨買超} — 近10天
+      fi_3d_sum, it_3d_sum  : 近3日合計(張)
+      it_buy_days           : 近5日投信買超天數
+      available, error
     """
-    empty = dict(fi_net_5d=[], it_net_5d=[], fi_3d_sum=0.0,
-                 it_3d_sum=0.0, it_buy_days=0, available=False, error="")
+    empty = dict(
+        fi_net_5d=[], it_net_5d=[],
+        fi_net_daily={}, it_net_daily={},
+        fi_3d_sum=0.0, it_3d_sum=0.0,
+        it_buy_days=0, available=False, error=""
+    )
 
     # ── 手動快取（session_state，當天有效）────────────────────────────
-    today_key  = datetime.date.today().strftime('%Y%m%d')
-    cache_key  = f"_chip_{ticker}_{today_key}"
+    today_key = datetime.date.today().strftime('%Y%m%d')
+    cache_key = f"_chip_{ticker}_{today_key}"
     try:
         cached = st.session_state.get(cache_key)
-        if cached is not None:
+        if cached is not None and cached.get('available'):
             return cached
     except Exception:
         pass
@@ -1092,13 +1097,12 @@ def _fetch_chip_data(ticker: str) -> dict:
     try:
         import requests as _req
 
-        # 拔除後綴，只留純數字代號
         stock_id = re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
         if not stock_id.isdigit():
             empty["error"] = f"不支援的代號格式: {ticker}"
             return empty
 
-        start = (datetime.date.today() - datetime.timedelta(days=20)).strftime('%Y-%m-%d')
+        start = (datetime.date.today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
 
         resp = _req.get(
             "https://api.finmindtrade.com/api/v4/data",
@@ -1106,14 +1110,14 @@ def _fetch_chip_data(ticker: str) -> dict:
                 "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
                 "data_id": stock_id,
                 "start_date": start,
-                "token": "",          # 免費版不需要 token
+                "token": "",
             },
             timeout=12
         )
 
         payload = resp.json()
         if payload.get('status') != 200 or not payload.get('data'):
-            empty["error"] = f"FinMind API 無 {stock_id} 資料（status={payload.get('status')}）"
+            empty["error"] = f"FinMind API status={payload.get('status')}"
             return empty
 
         raw = pd.DataFrame(payload['data'])
@@ -1123,23 +1127,29 @@ def _fetch_chip_data(ticker: str) -> dict:
         ).fillna(0.0)
 
         fi  = pivot.get('Foreign_Investor',
-                        pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
+                        pd.Series(0.0, index=pivot.index))
         it  = pivot.get('Investment_Trust',
-                        pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
+                        pd.Series(0.0, index=pivot.index))
+
         fi5 = fi.tail(5).tolist()
         it5 = it.tail(5).tolist()
 
+        # 近10天每日明細 dict（用於彈窗）
+        fi_daily = {str(d): round(v, 0) for d, v in fi.tail(10).items()}
+        it_daily = {str(d): round(v, 0) for d, v in it.tail(10).items()}
+
         result = {
-            "fi_net_5d":   fi5,
-            "it_net_5d":   it5,
-            "fi_3d_sum":   float(sum(fi5[-3:])) if len(fi5) >= 3 else 0.0,
-            "it_3d_sum":   float(sum(it5[-3:])) if len(it5) >= 3 else 0.0,
-            "it_buy_days": int(sum(1 for v in it5 if v > 0)),
-            "available":   True,
-            "error":       "",
+            "fi_net_5d":    fi5,
+            "it_net_5d":    it5,
+            "fi_net_daily": fi_daily,
+            "it_net_daily": it_daily,
+            "fi_3d_sum":    float(sum(fi5[-3:])) if len(fi5) >= 3 else 0.0,
+            "it_3d_sum":    float(sum(it5[-3:])) if len(it5) >= 3 else 0.0,
+            "it_buy_days":  int(sum(1 for v in it5 if v > 0)),
+            "available":    True,
+            "error":        "",
         }
 
-        # 存入 session_state 快取
         try:
             st.session_state[cache_key] = result
         except Exception:
@@ -2397,12 +2407,24 @@ def _wl_fetch_quote(ticker: str, _bucket: str = "") -> dict:
                 "high": 0, "low": 0, "ok": False}
 
 
-@st.cache_data(ttl=600, show_spinner=False)
 def _wl_scan_one(ticker: str, period: str, _bucket: str = "") -> dict | None:
     """
-    對單一自選股做 DNA + 買點 + 籌碼完整掃描（快取 10 分鐘）。
-    比 _scan_one 多了籌碼評估，專門給自選股看板用。
+    對單一自選股做 DNA + 買點 + 籌碼完整掃描。
+
+    ★ 改用 session_state 手動快取（移除 @st.cache_data）:
+      @st.cache_data 在 Streamlit Cloud 首次執行時，即使 cache miss 也可能因為
+      網路或 session_state 尚未初始化而回傳 None，改用手動快取更可靠。
+      快取 key = f"_wl_scan_{ticker}_{date}_{bucket}" 盤中每分鐘失效。
     """
+    # ── session_state 手動快取 ─────────────────────────────────────────
+    cache_key = f"_wl_scan_{ticker}_{_bucket}"
+    try:
+        cached = st.session_state.get(cache_key)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     try:
         df, used = fetch_data(ticker, period=period, time_bucket=_get_cache_bucket())
         if df is None or len(df) < 60:
@@ -2411,46 +2433,63 @@ def _wl_scan_one(ticker: str, period: str, _bucket: str = "") -> dict | None:
         dna = detect_wave_dna(df)
         wr  = compute_winrate(dna, df)
 
-        # 籌碼（自選股掃描才打 FinMind，批量掃描不打）
+        # 籌碼（自選股掃描才打 FinMind REST API）
         chip_raw  = _fetch_chip_data(used)
         chip_eval = evaluate_chip(chip_raw)
 
         # 買點評估（含籌碼第⑥條件）
         entry = evaluate_entry_point(dna, wr, df, chip=chip_eval)
 
-        # 前瞻 D+1 下限
-        rows   = generate_forward_matrix(df, wr, dna, n_days=2)
-        d1_low = rows[0]['下限參考'] if rows else None
+        # 前瞻 D+1、D+2 下限
+        rows   = generate_forward_matrix(df, wr, dna, n_days=3)
+        d1_low = rows[0]['下限參考'] if len(rows) > 0 else None
+        d2_low = rows[1]['下限參考'] if len(rows) > 1 else None
 
         last = df.iloc[-1]
-        return {
-            "代號":       used,
-            "股名":       get_stock_name(used),
-            "收盤價":     round(float(last["Close"]), 2),
-            "勝率":       round(wr["winrate"] * 100, 1),
-            "分類":       wr["category_label"],
-            "category":   wr["category"],
-            "R_cycle":    round(dna["R_cycle"], 3),
-            "T_median":   dna["T_median"],
-            "D_current":  dna["D_current"],
-            "均線型態":   wr["desc_ma"],
-            "KD狀態":     wr["desc_kd"],
-            "K9":         wr["k9"],
-            "D9":         wr["d9"],
-            "量比":       wr["vol_ratio"],
-            "買點分數":   entry["score"],
-            "買點訊號":   entry["signal"],
-            "KD拐頭":     entry["kd_stage"],
-            "籌碼標籤":   chip_eval["label"],
-            "籌碼加分":   chip_eval["boost"],
-            "籌碼否決":   chip_eval["veto"],
-            "籌碼說明":   chip_eval["detail"],
+        result = {
+            "代號":        used,
+            "股名":        get_stock_name(used),
+            "收盤價":      round(float(last["Close"]), 2),
+            "勝率":        round(wr["winrate"] * 100, 1),
+            "分類":        wr["category_label"],
+            "category":    wr["category"],
+            "R_cycle":     round(dna["R_cycle"], 3),
+            "T_median":    dna["T_median"],
+            "D_current":   dna["D_current"],
+            "均線型態":    wr["desc_ma"],
+            "KD狀態":      wr["desc_kd"],
+            "時間波":      wr["desc_time"],
+            "K9":          wr["k9"],
+            "D9":          wr["d9"],
+            "量比":        wr["vol_ratio"],
+            "買點分數":    entry["score"],
+            "買點訊號":    entry["signal"],
+            "KD拐頭":      entry["kd_stage"],
+            "買點條件":    entry["conditions"],
+            "籌碼標籤":    chip_eval["label"],
+            "籌碼加分":    chip_eval["boost"],
+            "籌碼否決":    chip_eval["veto"],
+            "籌碼說明":    chip_eval["detail"],
+            "籌碼可用":    chip_raw.get("available", False),
             "it_buy_days": chip_raw.get("it_buy_days", 0),
-            "fi_3d_sum":  chip_raw.get("fi_3d_sum", 0.0),
-            "it_3d_sum":  chip_raw.get("it_3d_sum", 0.0),
-            "D1下限":     d1_low,
-            "chart_url":  get_chart_url(used),
+            "fi_3d_sum":   chip_raw.get("fi_3d_sum", 0.0),
+            "it_3d_sum":   chip_raw.get("it_3d_sum", 0.0),
+            # 近10天每日明細（供彈窗）
+            "fi_net_daily": chip_raw.get("fi_net_daily", {}),
+            "it_net_daily": chip_raw.get("it_net_daily", {}),
+            "fi_net_5d":   chip_raw.get("fi_net_5d", []),
+            "it_net_5d":   chip_raw.get("it_net_5d", []),
+            "D1下限":      d1_low,
+            "D2下限":      d2_low,
+            "chart_url":   get_chart_url(used),
         }
+
+        try:
+            st.session_state[cache_key] = result
+        except Exception:
+            pass
+
+        return result
     except Exception:
         return None
 
@@ -2685,9 +2724,343 @@ def render_watchlist_page(period: str = "2y"):
 
 def _render_wl_scan_table(results: list):
     """
-    自選股掃描結果表格 — 整合 DNA + 買點獵人 + 三大法人
-    比一般掃描表格多顯示: 籌碼標籤 / 外資投信動向 / D+1掛單下限
+    自選股掃描結果表格 v2
+    ─────────────────────────────────────────────────────────────────────────
+    修正:
+      1. 籌碼顯示實際數值(不再只顯示標籤)
+      2. 加入 D+2 下限欄位
+      3. 買點評估 → 點擊開彈窗，顯示 5 大條件明細
+      4. 法人動向 → 點擊開彈窗，顯示近10天三大法人每日買賣超明細表
     """
+    bar_color = {"top": "#0a7c59", "mid": "#d97706", "warn": "#c0392b"}
+
+    # ── 所有 JS 彈窗（一次定義）───────────────────────────────────────
+    modal_defs = """
+    <!-- 技術線型彈窗 -->
+    <div id="wlChartModal" onclick="if(event.target===this){this.style.display='none';document.getElementById('wlChartFrame').src='';}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+         background:rgba(0,0,0,0.72);z-index:9000;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:14px;width:90%;max-width:1100px;
+                  height:82vh;overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.45);">
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:12px 18px;background:#1565c0;color:#fff;">
+          <span id="wlChartTitle" style="font-weight:700;font-size:16px;"></span>
+          <button onclick="document.getElementById('wlChartModal').style.display='none';
+                           document.getElementById('wlChartFrame').src='';"
+                  style="background:rgba(255,255,255,.2);border:none;color:#fff;
+                         font-size:18px;cursor:pointer;border-radius:6px;padding:4px 10px;">✕</button>
+        </div>
+        <iframe id="wlChartFrame" src="" style="width:100%;height:calc(82vh - 52px);border:none;"></iframe>
+      </div>
+    </div>
+
+    <!-- 買點詳細彈窗 -->
+    <div id="entryModal" onclick="if(event.target===this){this.style.display='none';}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+         background:rgba(0,0,0,0.72);z-index:9001;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:14px;width:420px;max-width:95%;
+                  max-height:85vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.45);">
+        <div id="entryModalContent" style="padding:20px;"></div>
+        <div style="padding:0 20px 16px;">
+          <button onclick="document.getElementById('entryModal').style.display='none';"
+                  style="width:100%;background:#1565c0;color:#fff;border:none;
+                         border-radius:8px;padding:10px;font-size:14px;cursor:pointer;">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 法人動向彈窗 -->
+    <div id="chipModal" onclick="if(event.target===this){this.style.display='none';}"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+         background:rgba(0,0,0,0.72);z-index:9001;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:14px;width:560px;max-width:95%;
+                  max-height:85vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.45);">
+        <div id="chipModalContent" style="padding:20px;"></div>
+        <div style="padding:0 20px 16px;">
+          <button onclick="document.getElementById('chipModal').style.display='none';"
+                  style="width:100%;background:#1565c0;color:#fff;border:none;
+                         border-radius:8px;padding:10px;font-size:14px;cursor:pointer;">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    function openWlChart(url, title) {
+        document.getElementById('wlChartFrame').src = url;
+        document.getElementById('wlChartTitle').textContent = title;
+        document.getElementById('wlChartModal').style.display = 'flex';
+    }
+    function openEntryDetail(html) {
+        document.getElementById('entryModalContent').innerHTML = html;
+        document.getElementById('entryModal').style.display = 'flex';
+    }
+    function openChipDetail(html) {
+        document.getElementById('chipModalContent').innerHTML = html;
+        document.getElementById('chipModal').style.display = 'flex';
+    }
+    </script>"""
+
+    # ── 逐列生成 ─────────────────────────────────────────────────────
+    rows_html = ""
+    for i, r in enumerate(results, 1):
+        cat     = r["category"]
+        bc      = bar_color.get(cat, "#1565c0")
+        wr_val  = r["勝率"]
+        score   = r["買點分數"]
+        signal  = r["買點訊號"]
+        code    = r["代號"]
+        name    = r.get("股名", "")
+        url     = r.get("chart_url", get_chart_url(code))
+        safe_t  = f"{name}({code})".replace("'", " ")
+
+        sc_color = ("#c0392b" if "共振" in signal else "#0a7c59" if score >= 80
+                    else "#1565c0" if score >= 65 else "#d97706" if score >= 50 else "#9e9e9e")
+
+        cat_badge = {
+            "top":  '<span style="background:#0a7c59;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;white-space:nowrap;">🚀頂級</span>',
+            "mid":  '<span style="background:#d97706;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;white-space:nowrap;">⏳蓄勢</span>',
+            "warn": '<span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;white-space:nowrap;">🛑警戒</span>',
+        }.get(cat, r["分類"])
+
+        rc       = r["R_cycle"]
+        rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+        d1_str   = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+        d2_str   = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+
+        # ── 買點詳細彈窗 HTML ─────────────────────────────────────────
+        conds = r.get("買點條件", {})
+        ci = lambda v: "✅" if v else "❌"
+        entry_html = f"""
+        <div style='font-family:Noto Sans TC,sans-serif;'>
+          <div style='font-size:18px;font-weight:700;color:{sc_color};margin-bottom:12px;'>
+            {code} {name}<br>
+            <span style='font-size:28px;'>{score}分</span>
+            <span style='font-size:16px;'> {signal}</span>
+          </div>
+          <div style='font-size:14px;line-height:2.2;'>
+            <div>{ci(conds.get('c3_rcycle'))} ① R_cycle ≥ 1.0 時間波飽和
+              <b style='color:{rc_color};'> {rc:.3f}</b></div>
+            <div>{ci(conds.get('c4_kd'))} ② KD 低檔拐頭
+              <b> {r.get('KD拐頭','')} (K9={r.get('K9',0):.0f} D9={r.get('D9',0):.0f})</b></div>
+            <div>{ci(conds.get('c1_mid'))} ③ 中繼蓄勢分類
+              <b> {r['分類']}</b></div>
+            <div>{ci(conds.get('c2_wr'))} ④ 勝率甜蜜區 50~68%
+              <b> {wr_val:.0f}%</b></div>
+            <div>{ci(conds.get('c5_vol'))} ⑤ 量比 &lt; 2.5
+              <b> {r.get('量比',0):.2f}x</b></div>
+          </div>
+          <div style='margin-top:12px;padding:10px;background:#eaf2fb;border-radius:8px;font-size:13px;'>
+            📌 掛單參考：D+1下限 <b>{d1_str}</b> 元 ｜ D+2下限 <b>{d2_str}</b> 元（停損基準）
+          </div>
+          <div style='margin-top:8px;font-size:12px;color:#4a6fa5;'>
+            {r.get('籌碼說明','')}
+          </div>
+        </div>""".replace('"', '&quot;').replace("'", "&#39;")
+
+        # ── 法人彈窗 HTML（近10天每日明細）──────────────────────────
+        fi_d = r.get("fi_net_daily", {})
+        it_d = r.get("it_net_daily", {})
+        chip_avail = r.get("籌碼可用", False)
+        it_days = r.get("it_buy_days", 0)
+        fi_3d = r.get("fi_3d_sum", 0.0)
+        it_3d = r.get("it_3d_sum", 0.0)
+
+        if chip_avail and (fi_d or it_d):
+            all_dates = sorted(set(list(fi_d.keys()) + list(it_d.keys())), reverse=True)[:10]
+            chip_rows = ""
+            for d in all_dates:
+                fi_v = fi_d.get(d, 0.0)
+                it_v = it_d.get(d, 0.0)
+                fi_col = "#0a7c59" if fi_v > 0 else "#c0392b"
+                it_col = "#0a7c59" if it_v > 0 else "#c0392b"
+                chip_rows += f"""<tr style='border-bottom:1px solid #eaf2fb;'>
+                  <td style='padding:6px 10px;color:#4a6fa5;font-size:13px;'>{d}</td>
+                  <td style='padding:6px 10px;text-align:right;font-weight:700;
+                      color:{fi_col};font-family:IBM Plex Mono,monospace;font-size:13px;'>{fi_v:+,.0f}</td>
+                  <td style='padding:6px 10px;text-align:right;font-weight:700;
+                      color:{it_col};font-family:IBM Plex Mono,monospace;font-size:13px;'>{it_v:+,.0f}</td>
+                </tr>"""
+            chip_html = f"""
+            <div style='font-family:Noto Sans TC,sans-serif;'>
+              <div style='font-size:17px;font-weight:700;color:#1a2b3c;margin-bottom:14px;'>
+                {code} {name} — 三大法人近10天買賣超（張）
+              </div>
+              <div style='display:flex;gap:16px;margin-bottom:14px;font-size:13px;'>
+                <div style='background:#eaf2fb;border-radius:8px;padding:8px 14px;'>
+                  外資近3日合計：<b style='color:{"#0a7c59" if fi_3d>0 else "#c0392b"};'>{fi_3d:+,.0f}張</b>
+                </div>
+                <div style='background:#eaf2fb;border-radius:8px;padding:8px 14px;'>
+                  投信近5日買超：<b style='color:{"#0a7c59" if it_days>=3 else "#1a2b3c"};'>{it_days}/5天</b>
+                </div>
+                <div style='background:#eaf2fb;border-radius:8px;padding:8px 14px;'>
+                  投信近3日：<b style='color:{"#0a7c59" if it_3d>0 else "#c0392b"};'>{it_3d:+,.0f}張</b>
+                </div>
+              </div>
+              <table style='width:100%;border-collapse:collapse;'>
+                <thead>
+                  <tr style='background:#1565c0;color:#fff;font-size:13px;'>
+                    <th style='padding:8px 10px;text-align:left;'>日期</th>
+                    <th style='padding:8px 10px;text-align:right;'>外資（張）</th>
+                    <th style='padding:8px 10px;text-align:right;'>投信（張）</th>
+                  </tr>
+                </thead>
+                <tbody>{chip_rows}</tbody>
+              </table>
+              <div style='margin-top:10px;font-size:11px;color:#7a9bbf;'>
+                資料來源：FinMind / 台灣交易所法人買賣超公告（正數=買超，負數=賣超）
+              </div>
+            </div>"""
+        else:
+            chip_html = f"""
+            <div style='font-family:Noto Sans TC,sans-serif;padding:10px;'>
+              <div style='font-size:16px;font-weight:700;color:#1a2b3c;margin-bottom:10px;'>
+                {code} {name} — 三大法人
+              </div>
+              <div style='color:#4a6fa5;font-size:14px;'>
+                ℹ️ 籌碼資料暫時無法取得，可能原因：<br>
+                • FinMind API 連線逾時<br>
+                • 該股為美股或特殊股票（無台灣法人資料）<br>
+                • 請稍後重新掃描
+              </div>
+            </div>"""
+
+        chip_html_esc  = chip_html.replace('"', '&quot;').replace("'", "&#39;")
+        chip_label = r["籌碼標籤"]
+        chip_color = ("#c0392b" if "共振" in chip_label or "倒貨" in chip_label
+                      else "#0a7c59" if "認養" in chip_label or "共振" in chip_label
+                      else "#d97706" if "佈局" in chip_label
+                      else "#7a9bbf")
+
+        # 法人數值（直接顯示）
+        fi_3d_r = r.get("fi_3d_sum", 0.0)
+        it_3d_r = r.get("it_3d_sum", 0.0)
+        it_d_r  = r.get("it_buy_days", 0)
+        fi_col_r = "#0a7c59" if fi_3d_r > 0 else "#c0392b"
+        it_col_r = "#0a7c59" if it_3d_r > 0 else "#c0392b"
+
+        row_bg = "background:#f7fafd;" if i % 2 == 0 else "background:#ffffff;"
+
+        rows_html += f"""
+        <tr style="{row_bg}">
+          <td style="color:#7a9bbf;text-align:center;font-size:12px;">{i}</td>
+          <td>
+            <a href="{url}" target="_blank"
+               style="color:#1565c0;font-weight:700;font-size:13px;
+                      font-family:'IBM Plex Mono',monospace;text-decoration:none;">{code}</a>
+          </td>
+          <td style="color:#1a2b3c;font-size:12px;">{name}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                     font-size:14px;color:#1a2b3c;">{r['收盤價']}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:5px;">
+              <div style="width:45px;background:#c8d8e8;border-radius:3px;height:7px;overflow:hidden;">
+                <div style="width:{min(wr_val,100):.0f}%;height:7px;background:{bc};border-radius:3px;"></div>
+              </div>
+              <span style="color:{bc};font-weight:700;font-size:12px;">{wr_val:.0f}%</span>
+            </div>
+          </td>
+          <td>{cat_badge}</td>
+          <td style="color:{rc_color};font-weight:700;font-size:12px;
+                     font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+          <td>
+            <button onclick="openEntryDetail('{entry_html}')"
+              style="background:{sc_color};color:#fff;border:none;border-radius:6px;
+                     padding:4px 10px;cursor:pointer;font-size:12px;font-weight:700;
+                     white-space:nowrap;">
+              {score}分 {signal[:4]}
+            </button>
+          </td>
+          <td>
+            <button onclick="openChipDetail('{chip_html_esc}')"
+              style="background:transparent;border:1px solid {chip_color};border-radius:6px;
+                     padding:3px 8px;cursor:pointer;font-size:11px;color:{chip_color};
+                     white-space:nowrap;">
+              {chip_label[:8]}
+            </button>
+          </td>
+          <td>
+            <div style="font-size:11px;line-height:1.8;">
+              <span style="color:{fi_col_r};font-weight:600;">外{fi_3d_r:+,.0f}張</span><br>
+              <span style="color:{it_col_r};font-weight:600;">投{it_3d_r:+,.0f}(買{it_d_r}/5)</span>
+            </div>
+          </td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;
+                     color:#1565c0;text-align:center;">{d1_str}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;
+                     color:#d97706;text-align:center;">{d2_str}</td>
+          <td style="text-align:center;">
+            <button onclick="openWlChart('{url}','{safe_t}')"
+              style="background:#eaf2fb;border:1px solid #b8cce0;border-radius:5px;
+                     padding:3px 8px;cursor:pointer;font-size:12px;color:#1565c0;">📈</button>
+          </td>
+        </tr>"""
+
+    table_html = f"""
+    {modal_defs}
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px;">
+      <thead>
+        <tr style="background:#1565c0;color:#fff;font-size:11px;">
+          <th style="padding:8px 5px;width:28px;">#</th>
+          <th style="padding:8px;text-align:left;min-width:85px;">代號</th>
+          <th style="padding:8px;text-align:left;min-width:65px;">股名</th>
+          <th style="padding:8px;text-align:left;min-width:70px;">收盤價</th>
+          <th style="padding:8px;text-align:left;min-width:90px;">波段勝率</th>
+          <th style="padding:8px;text-align:left;min-width:60px;">分類</th>
+          <th style="padding:8px;text-align:left;min-width:65px;">R_cycle</th>
+          <th style="padding:8px;text-align:left;min-width:95px;">🎯買點評估</th>
+          <th style="padding:8px;text-align:left;min-width:80px;">🧬籌碼動態</th>
+          <th style="padding:8px;text-align:left;min-width:95px;">法人動向(3日)</th>
+          <th style="padding:8px;text-align:center;min-width:65px;">D+1下限</th>
+          <th style="padding:8px;text-align:center;min-width:65px;">D+2下限</th>
+          <th style="padding:8px;width:38px;">線型</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    </div>"""
+
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    # 手機卡片版
+    cards_html = '<div class="mobile-cards">'
+    for i, r in enumerate(results, 1):
+        code   = r["代號"]
+        name   = r.get("股名", "")
+        url    = r.get("chart_url", get_chart_url(code))
+        score  = r["買點分數"]
+        cat    = r["category"]
+        bc     = bar_color.get(cat, "#1565c0")
+        sc_col = ("#0a7c59" if score >= 80 else "#1565c0" if score >= 65
+                  else "#d97706" if score >= 50 else "#9e9e9e")
+        fi_3d  = r.get("fi_3d_sum", 0.0)
+        it_d   = r.get("it_buy_days", 0)
+        fi_col = "#0a7c59" if fi_3d > 0 else "#c0392b"
+        d1     = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+        d2     = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+        cards_html += f"""
+        <div class="scan-card">
+          <div class="sc-header">
+            <div>
+              <a href="{url}" target="_blank" class="sc-code">#{i} {code}</a>
+              <span class="sc-name">{" · " + name if name else ""}</span>
+            </div>
+            <span style="font-size:13px;font-weight:700;color:{sc_col};">{score}分 {r['買點訊號'][:4]}</span>
+          </div>
+          <div class="sc-meta">
+            <span>勝率 <b style="color:{bc};">{r['勝率']:.0f}%</b></span>
+            <span>R {r['R_cycle']:.3f}</span>
+            <span style="color:{fi_col};">外資3d {fi_3d:+,.0f}張</span>
+            <span>投信{it_d}/5天</span>
+          </div>
+          <div class="sc-meta" style="margin-top:4px;">
+            <span>D+1下限 <b>{d1}</b></span>
+            <span>D+2下限 <b>{d2}</b></span>
+          </div>
+          <div class="sc-desc">{r.get('籌碼說明','')[:40]}</div>
+        </div>"""
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
     bar_color = {"top": "#0a7c59", "mid": "#d97706", "warn": "#c0392b"}
     modal_js = """
     <div id="scanModal" onclick="if(event.target===this){this.style.display='none';document.getElementById('scanFrame').src='';}"
