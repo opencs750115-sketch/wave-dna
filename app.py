@@ -40,12 +40,10 @@ except ImportError:
     _EQUITY_QUERY_AVAILABLE = False
 
 # FinMind — 台股三大法人籌碼數據 (完全免費/免註冊)
-# 資料來源: 證交所/櫃買中心每日法人買賣超公告
-try:
-    from FinMind.data import DataLoader as _FinMindDataLoader
-    _FINMIND_AVAILABLE = True
-except ImportError:
-    _FINMIND_AVAILABLE = False
+# ★ 改用 FinMind 免費 REST API（不安裝套件，避免依賴衝突）
+# API: https://api.finmindtrade.com/api/v4/data  免費/免註冊
+# requests 是 Streamlit 內建依賴，無需額外安裝
+_FINMIND_AVAILABLE = True   # 只要能連網就可用
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  全域設定
@@ -1062,69 +1060,72 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 
 def _fetch_chip_data(ticker: str) -> dict:
     """
-    抓取台股三大法人近 14 天籌碼資料 (FinMind，免費免註冊)。
+    抓取台股三大法人近 20 天籌碼資料。
 
-    ★ 修正:
-      - 移除 @st.cache_data: Streamlit Cloud 上 cache decorator 有時造成
-        函式體完全不執行或錯誤被靜默吞掉，改用 st.session_state 手動快取。
-      - 函式內部重新 try import: 不依賴模組層級的 _FINMIND_AVAILABLE，
-        確保即使初始化時 import 失敗，後續呼叫仍能重試。
-      - 詳細錯誤訊息: 讓 UI 顯示具體失敗原因。
+    ★ 數據來源: FinMind 免費 REST API（不安裝 finmind 套件）
+      URL: https://api.finmindtrade.com/api/v4/data
+      完全免費、免註冊、免 token，只需要 requests（Streamlit 內建依賴）。
+      避免了 finmind 套件與 Streamlit Cloud 環境的依賴版本衝突問題。
 
-    手動快取策略: session_state["_chip_{ticker}_{date}"]，每天失效一次。
+    手動快取: st.session_state，當天內重複查詢直接回傳快取結果。
 
     回傳 dict:
-      fi_net_5d, it_net_5d, fi_3d_sum, it_3d_sum, it_buy_days, available, error
+      fi_net_5d, it_net_5d : 外資/投信近5日每日淨買超(張)
+      fi_3d_sum, it_3d_sum : 外資/投信近3日合計淨買超(張)
+      it_buy_days          : 投信近5日買超天數
+      available            : bool
+      error                : 失敗原因
     """
     empty = dict(fi_net_5d=[], it_net_5d=[], fi_3d_sum=0.0,
                  it_3d_sum=0.0, it_buy_days=0, available=False, error="")
 
-    # ── 手動快取 (session_state，每天失效) ────────────────────────────
-    today_key = datetime.date.today().strftime('%Y%m%d')
-    cache_key = f"_chip_{ticker}_{today_key}"
+    # ── 手動快取（session_state，當天有效）────────────────────────────
+    today_key  = datetime.date.today().strftime('%Y%m%d')
+    cache_key  = f"_chip_{ticker}_{today_key}"
     try:
         cached = st.session_state.get(cache_key)
         if cached is not None:
             return cached
     except Exception:
-        pass  # session_state 不可用時直接繼續
-
-    # ── 函式內部重新 try import ────────────────────────────────────────
-    # 注意: pip package name 是 finmind (小寫)，但 Python import 路徑是 FinMind (大寫)
-    try:
-        from FinMind.data import DataLoader as _DL
-    except ImportError:
-        empty["error"] = "finmind 套件未安裝，請確認 requirements.txt 含 finmind>=2.0.0 並重新部署"
-        return empty
+        pass
 
     try:
-        import re as _re, pandas as _pd
+        import requests as _req
 
         # 拔除後綴，只留純數字代號
-        stock_id = _re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
+        stock_id = re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
         if not stock_id.isdigit():
             empty["error"] = f"不支援的代號格式: {ticker}"
             return empty
 
         start = (datetime.date.today() - datetime.timedelta(days=20)).strftime('%Y-%m-%d')
 
-        dl  = _DL()
-        raw = dl.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start)
+        resp = _req.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            params={
+                "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+                "data_id": stock_id,
+                "start_date": start,
+                "token": "",          # 免費版不需要 token
+            },
+            timeout=12
+        )
 
-        if raw is None or (hasattr(raw, 'empty') and raw.empty):
-            empty["error"] = f"FinMind 無 {stock_id} 的法人資料（可能為興櫃或新掛牌）"
+        payload = resp.json()
+        if payload.get('status') != 200 or not payload.get('data'):
+            empty["error"] = f"FinMind API 無 {stock_id} 資料（status={payload.get('status')}）"
             return empty
 
+        raw = pd.DataFrame(payload['data'])
         raw['net'] = (raw['buy'].astype(float) - raw['sell'].astype(float)) / 1000.0
         pivot = raw.pivot_table(
             index='date', columns='name', values='net', aggfunc='sum'
         ).fillna(0.0)
 
-        fi = pivot.get('Foreign_Investor',
-                       _pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
-        it = pivot.get('Investment_Trust',
-                       _pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
-
+        fi  = pivot.get('Foreign_Investor',
+                        pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
+        it  = pivot.get('Investment_Trust',
+                        pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
         fi5 = fi.tail(5).tolist()
         it5 = it.tail(5).tolist()
 
@@ -1147,7 +1148,7 @@ def _fetch_chip_data(ticker: str) -> dict:
         return result
 
     except Exception as e:
-        empty["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        empty["error"] = f"{type(e).__name__}: {str(e)[:100]}"
         return empty
 
 
