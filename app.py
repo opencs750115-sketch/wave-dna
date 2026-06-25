@@ -14,6 +14,7 @@
     pandas>=2.0
     numpy>=1.24
     scipy>=1.11
+    FinMind>=0.6       ← 台股三大法人籌碼數據(免費/免註冊)
 ================================================================================
 """
 
@@ -35,6 +36,14 @@ try:
     _EQUITY_QUERY_AVAILABLE = True
 except ImportError:
     _EQUITY_QUERY_AVAILABLE = False
+
+# FinMind — 台股三大法人籌碼數據 (完全免費/免註冊)
+# 資料來源: 證交所/櫃買中心每日法人買賣超公告
+try:
+    from FinMind.data import DataLoader as _FinMindDataLoader
+    _FINMIND_AVAILABLE = True
+except ImportError:
+    _FINMIND_AVAILABLE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  全域設定
@@ -1049,23 +1058,183 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
-def evaluate_entry_point(dna: dict, wr: dict, df: pd.DataFrame) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_chip_data(ticker: str) -> dict:
     """
-    買點獵人評估引擎 — 實作「四步SOP」
+    抓取台股三大法人近 14 天籌碼資料 (FinMind，免費免註冊)。
+
+    資料來源: 台灣證交所/櫃買中心每日法人買賣超公告，由 FinMind 整理。
+    FinMind 免費版限速約 600 次/小時，每檔約 0.4 秒，單股分析完全夠用。
+    批量掃描不呼叫此函式(避免 100 檔連打造成逾時)。
+
+    代號處理:
+      - '2330.TW' → '2330'
+      - '6798.TWO' → '6798'  (FinMind 上市/上櫃都用純數字)
+      - 興櫃股(emerging) 法人資料有限，但欄位相同，容錯處理
+
+    回傳 dict:
+      fi_net_5d   : 外資近5日每日淨買超(張)列表 [d-4, d-3, d-2, d-1, today]
+      it_net_5d   : 投信近5日每日淨買超(張)列表
+      fi_3d_sum   : 外資近3日合計淨買超(張)
+      it_3d_sum   : 投信近3日合計淨買超(張)
+      it_buy_days : 投信近5日買超天數 (淨買超>0 的天數)
+      available   : bool — 資料取得成功
+      error       : 失敗原因(成功時為"")
+    """
+    empty = dict(fi_net_5d=[], it_net_5d=[], fi_3d_sum=0.0,
+                 it_3d_sum=0.0, it_buy_days=0, available=False, error="")
+
+    if not _FINMIND_AVAILABLE:
+        empty["error"] = "FinMind 未安裝"
+        return empty
+
+    try:
+        # 拔除後綴，只留純數字代號
+        stock_id = re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
+        if not stock_id.isdigit():
+            empty["error"] = f"不支援的代號格式: {ticker}"
+            return empty
+
+        start = (datetime.date.today() - datetime.timedelta(days=20)).strftime('%Y-%m-%d')
+        dl = _FinMindDataLoader()
+        raw = dl.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start)
+
+        if raw.empty:
+            empty["error"] = "FinMind 無此股資料"
+            return empty
+
+        # 計算每日各法人淨買超(張)
+        raw['net'] = (raw['buy'].astype(float) - raw['sell'].astype(float)) / 1000.0
+        pivot = raw.pivot_table(
+            index='date', columns='name', values='net', aggfunc='sum'
+        ).fillna(0.0)
+
+        fi = pivot.get('Foreign_Investor',
+                       pd.Series(0.0, index=pivot.index, name='Foreign_Investor'))
+        it = pivot.get('Investment_Trust',
+                       pd.Series(0.0, index=pivot.index, name='Investment_Trust'))
+
+        # 取最近5個交易日
+        fi5 = fi.tail(5).tolist()
+        it5 = it.tail(5).tolist()
+
+        return {
+            "fi_net_5d":   fi5,
+            "it_net_5d":   it5,
+            "fi_3d_sum":   float(sum(fi5[-3:])) if len(fi5) >= 3 else 0.0,
+            "it_3d_sum":   float(sum(it5[-3:])) if len(it5) >= 3 else 0.0,
+            "it_buy_days": int(sum(1 for v in it5 if v > 0)),
+            "available":   True,
+            "error":       "",
+        }
+
+    except Exception as e:
+        empty["error"] = str(e)[:80]
+        return empty
+
+
+def evaluate_chip(chip: dict) -> dict:
+    """
+    根據 _fetch_chip_data 的結果評估籌碼強弱，回傳:
+
+      label     : 籌碼標籤文字
+      css_color : 標籤顯示顏色
+      boost     : True → 籌碼面加分(強力共振)，直接升級買點等級
+      veto      : True → 籌碼面一票否決(法人大賣，避坑)
+      detail    : 詳細說明字串
+
+    判斷邏輯:
+      🔥 法人強烈共振  : 投信近5日買超≥3天 且 外資近3日合計>0
+      🟢 投信波段認養  : 投信近5日買超≥3天 (外資不論)
+      🟡 外資默默佈局  : 外資近3日合計>1000張，投信不明顯
+      🔴 籌碼危險!    : 外資連3天淨賣>1000張 且 投信連3天淨賣>100張 → 一票否決
+      ⚪ 法人觀望中   : 無明顯方向
+    """
+    if not chip.get("available"):
+        return {
+            "label": "⚪ 籌碼資料不可用",
+            "css_color": "#9e9e9e",
+            "boost": False, "veto": False,
+            "detail": chip.get("error", "FinMind 未安裝或無資料"),
+        }
+
+    it_days = chip["it_buy_days"]
+    fi_3d   = chip["fi_3d_sum"]
+    it_3d   = chip["it_3d_sum"]
+    it5     = chip["it_net_5d"]
+    fi5     = chip["fi_net_5d"]
+
+    # 一票否決條件: 外資連3天大賣(>1000張/天) 且 投信連3天賣超(>100張/天)
+    fi_selling = len(fi5) >= 3 and all(v < -1000 for v in fi5[-3:])
+    it_selling = len(it5) >= 3 and all(v < -100  for v in it5[-3:])
+    veto = fi_selling and it_selling
+
+    if veto:
+        return {
+            "label": "🔴 法人集體倒貨，避坑！",
+            "css_color": "#c0392b",
+            "boost": False, "veto": True,
+            "detail": f"外資近3日合計{fi_3d:+.0f}張、投信近3日{it_3d:+.0f}張，雙向大賣超，不宜進場",
+        }
+
+    # 最強共振
+    if it_days >= 3 and fi_3d > 0:
+        return {
+            "label": "🔥 法人強烈共振！",
+            "css_color": "#c0392b",
+            "boost": True, "veto": False,
+            "detail": f"投信{it_days}/5天買超(近3日{it_3d:+.0f}張)＋外資近3日{fi_3d:+.0f}張，雙法人同步進場",
+        }
+
+    # 投信認養
+    if it_days >= 3:
+        return {
+            "label": "🟢 投信波段認養",
+            "css_color": "#0a7c59",
+            "boost": True, "veto": False,
+            "detail": f"投信近5日{it_days}/5天買超，近3日合計{it_3d:+.0f}張，波段佈局訊號",
+        }
+
+    # 外資默默佈局
+    if fi_3d > 1000:
+        return {
+            "label": "🟡 外資默默佈局",
+            "css_color": "#d97706",
+            "boost": False, "veto": False,
+            "detail": f"外資近3日合計{fi_3d:+.0f}張，投信{it_days}/5天買超",
+        }
+
+    return {
+        "label": "⚪ 法人觀望中",
+        "css_color": "#7a9bbf",
+        "boost": False, "veto": False,
+        "detail": f"外資近3日{fi_3d:+.0f}張，投信{it_days}/5天買超，無明顯方向",
+    }
+
+
+def evaluate_entry_point(dna: dict, wr: dict, df: pd.DataFrame,
+                         chip: dict | None = None) -> dict:
+    """
+    買點獵人評估引擎 — 五大技術條件 + 第⑥籌碼面過濾
     ────────────────────────────────────────────────────────────────────────
-    五個判斷條件與權重:
+    技術面五大條件(原有):
       ① R_cycle ≥ 1.0   → 35分 (最重要，時間波飽和)
-         R_cycle ≥ 1.3   → 額外+10分 (超額修正，能量蓄積更充分)
-      ② KD 低檔拐頭      → 25分 (K9 > D9 且 K9 < 60，未高檔鈍化)
-      ③ 中繼蓄勢分類     → 20分 (勝率 50~70% 的蓄勢期)
-      ④ 勝率甜蜜區 50~68% → 10分 (不追已噴發的 85%+)
-      ⑤ 量比 < 2.5       → 10分 (未爆量，主力仍在佈局階段)
+         R_cycle ≥ 1.3   → 額外+10分 (超額修正)
+      ② KD 低檔拐頭      → 25分 (K9 > D9 且 K9 < 60)
+      ③ 中繼蓄勢分類     → 20分
+      ④ 勝率甜蜜區 50~68% → 10分
+      ⑤ 量比 < 2.5       → 10分
+
+    ⑥ 籌碼面過濾(選填，chip 為 evaluate_chip() 的回傳值):
+      大加分: chip.boost=True  → 技術面分數已≥65時，升一級訊號
+      一票否決: chip.veto=True → 無論技術分數多高，強制設為「🚫 籌碼危險，不進場」
 
     訊號分級:
-      ≥ 80分: 🎯 強力買點
-      ≥ 65分: 📌 潛力買點
-      ≥ 50分: ⚠️ 蓄勢觀察
-      < 50分: 🚫 時機未到
+      ≥ 80分 (+ boost) : 🔥 籌碼共振買點 / 🎯 強力買點
+      ≥ 65分           : 📌 潛力買點
+      ≥ 50分           : ⚠️ 蓄勢觀察
+      < 50分           : 🚫 時機未到
+      veto             : 🚫 籌碼危險，不進場
     """
     cat     = wr["category"]
     winrate = wr["winrate"] * 100
@@ -1073,7 +1242,6 @@ def evaluate_entry_point(dna: dict, wr: dict, df: pd.DataFrame) -> dict:
     k9      = wr["k9"]
     d9      = wr["d9"]
     vol_r   = wr["vol_ratio"]
-    close   = wr["close"]
 
     c1_mid    = cat == "mid"
     c2_wr     = 50 <= winrate <= 68
@@ -1095,13 +1263,36 @@ def evaluate_entry_point(dna: dict, wr: dict, df: pd.DataFrame) -> dict:
     if c5_vol:    score += 10
     if r >= 1.3:  score = min(score + 10, 100)
 
+    # ── ⑥ 籌碼面過濾 ────────────────────────────────────────────────
+    chip_eval = chip or {}
+    chip_boost = chip_eval.get("boost", False)
+    chip_veto  = chip_eval.get("veto",  False)
+
+    # 一票否決：法人集體倒貨，強制覆蓋
+    if chip_veto:
+        return {
+            "score": score, "signal": "🚫 籌碼危險，不進場",
+            "kd_stage": kd_stage,
+            "chip_override": True,
+            "conditions": {
+                "c1_mid": c1_mid, "c2_wr": c2_wr,
+                "c3_rcycle": c3_rcycle, "c4_kd": c4_kd, "c5_vol": c5_vol,
+            },
+        }
+
+    # 技術面訊號
     if score >= 80:   signal = "🎯 強力買點"
     elif score >= 65: signal = "📌 潛力買點"
     elif score >= 50: signal = "⚠️ 蓄勢觀察"
     else:             signal = "🚫 時機未到"
 
+    # 籌碼大加分：技術面≥65且籌碼共振 → 升級為最高等
+    if chip_boost and score >= 65:
+        signal = "🔥 籌碼共振買點"
+
     return {
         "score": score, "signal": signal, "kd_stage": kd_stage,
+        "chip_override": False,
         "conditions": {
             "c1_mid": c1_mid, "c2_wr": c2_wr,
             "c3_rcycle": c3_rcycle, "c4_kd": c4_kd, "c5_vol": c5_vol,
@@ -2771,29 +2962,49 @@ def main():
 
     rows = generate_forward_matrix(df, wr, dna, n_days=top_n)
 
-    # ── ★ 買點獵人評估看板 ─────────────────────────────────────────
-    entry = evaluate_entry_point(dna, wr, df)
-    score = entry["score"]
-    signal = entry["signal"]
-    conds = entry["conditions"]
+    # ── ★ 籌碼資料抓取 (FinMind，快取1小時) ──────────────────────────
+    with st.spinner("🧬 正在讀取三大法人籌碼資料..."):
+        chip_raw  = _fetch_chip_data(used_ticker)
+    chip_eval = evaluate_chip(chip_raw)
 
-    # 取 D+1/D+2 的前瞻下限作為掛單和停損參考
+    # ── ★ 買點獵人評估看板(含籌碼第⑥條件) ────────────────────────────
+    entry  = evaluate_entry_point(dna, wr, df, chip=chip_eval)
+    score  = entry["score"]
+    signal = entry["signal"]
+    conds  = entry["conditions"]
+
     d1_low = rows[0]['下限參考'] if len(rows) > 0 else None
     d2_low = rows[1]['下限參考'] if len(rows) > 1 else None
 
-    score_color = ("#0a7c59" if score >= 80 else "#1565c0" if score >= 65
-                   else "#d97706" if score >= 50 else "#c0392b")
-    score_bg    = ("#e8f4ec" if score >= 80 else "#eaf2fb" if score >= 65
-                   else "#fef3c7" if score >= 50 else "#fde8e8")
+    # 訊號顏色
+    if "共振" in signal:          score_color, score_bg = "#c0392b", "#fde8e8"
+    elif score >= 80:              score_color, score_bg = "#0a7c59", "#e8f4ec"
+    elif score >= 65:              score_color, score_bg = "#1565c0", "#eaf2fb"
+    elif score >= 50:              score_color, score_bg = "#d97706", "#fef3c7"
+    else:                          score_color, score_bg = "#c0392b", "#fde8e8"
 
     cond_icon = lambda v: "✅" if v else "❌"
-
     d1_str = f"{d1_low:.2f}" if d1_low else "計算中"
     d2_str = f"{d2_low:.2f}" if d2_low else "計算中"
 
-    st.markdown(f"""
-    <div class="section-title">🎯 買點獵人評估 (SOP 四步驟)</div>
-    """, unsafe_allow_html=True)
+    # 籌碼否決特殊處理
+    chip_veto_html = ""
+    chip_boost_html = ""
+    if chip_eval.get("veto"):
+        chip_veto_html = f"""
+        <div style="background:#c0392b;color:#fff;border-radius:8px;
+                    padding:10px 16px;margin-top:10px;font-size:14px;font-weight:700;">
+          🚫 一票否決：{chip_eval['label']} — {chip_eval['detail']}
+        </div>"""
+    elif chip_eval.get("boost") and score >= 65:
+        chip_boost_html = f"""
+        <div style="background:#0a7c59;color:#fff;border-radius:8px;
+                    padding:10px 16px;margin-top:10px;font-size:14px;font-weight:700;">
+          🔥 籌碼面同步確認：法人秘密吃貨中！{chip_eval['detail']}
+        </div>"""
+
+    st.markdown('<div class="section-title">🎯 買點獵人評估 (技術面 × 籌碼面三合一)</div>',
+                unsafe_allow_html=True)
 
     st.markdown(f"""
     <div style="background:{score_bg};border:2px solid {score_color};border-radius:12px;
@@ -2802,7 +3013,7 @@ def main():
                   flex-wrap:wrap;gap:12px;">
         <div>
           <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;
-                      color:#4a6fa5;margin-bottom:4px;">買點綜合評分</div>
+                      color:#4a6fa5;margin-bottom:4px;">買點綜合評分（技術面）</div>
           <div style="display:flex;align-items:baseline;gap:10px;">
             <span style="font-family:'IBM Plex Mono',monospace;font-size:40px;
                          font-weight:700;color:{score_color};">{score}</span>
@@ -2810,28 +3021,98 @@ def main():
           </div>
         </div>
         <div style="font-size:14px;line-height:2.0;">
-          <div>{cond_icon(conds['c3_rcycle'])} ① R_cycle ≥ 1.0 (時間波飽和) &nbsp;
+          <div>{cond_icon(conds['c3_rcycle'])} ① R_cycle ≥ 1.0 &nbsp;
                <b style="color:{score_color};">{dna['R_cycle']:.3f}</b></div>
           <div>{cond_icon(conds['c4_kd'])} ② KD低檔拐頭 &nbsp;
-               <b>{entry['kd_stage']}</b> (K9={wr['k9']:.0f} D9={wr['d9']:.0f})</div>
-          <div>{cond_icon(conds['c1_mid'])} ③ 中繼蓄勢分類 &nbsp;
+               <b>{entry['kd_stage']}</b></div>
+          <div>{cond_icon(conds['c1_mid'])} ③ 中繼蓄勢 &nbsp;
                <b>{wr['category_label']}</b></div>
           <div>{cond_icon(conds['c2_wr'])} ④ 勝率甜蜜區 50~68% &nbsp;
                <b>{wr['winrate']*100:.0f}%</b></div>
-          <div>{cond_icon(conds['c5_vol'])} ⑤ 量比 &lt; 2.5 (未過熱) &nbsp;
+          <div>{cond_icon(conds['c5_vol'])} ⑤ 量比 &lt; 2.5 &nbsp;
                <b>{wr['vol_ratio']:.2f}x</b></div>
         </div>
       </div>
+      {chip_veto_html}{chip_boost_html}
       <div style="margin-top:12px;padding-top:10px;border-top:1px solid {score_color}33;
                   font-size:13px;color:#1a2b3c;">
-        <b style="color:{score_color};">📌 掛單區間參考</b><br>
-        D+1 波動下限 <b style="font-family:'IBM Plex Mono',monospace;">{d1_str}</b> 元
-        （分批低接掛單）&nbsp;｜&nbsp;
-        D+2 波動下限 <b style="font-family:'IBM Plex Mono',monospace;">{d2_str}</b> 元
-        （停損基準，跌破即出）
+        <b style="color:{score_color};">📌 掛單區間</b> &nbsp;
+        D+1 下限 <b style="font-family:'IBM Plex Mono',monospace;">{d1_str}</b> 元（低接）
+        &nbsp;｜&nbsp;
+        D+2 下限 <b style="font-family:'IBM Plex Mono',monospace;">{d2_str}</b> 元（停損基準）
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── ★ 籌碼特徵看板 ────────────────────────────────────────────────
+    st.markdown('<div class="section-title">🧬 籌碼特徵動態（三大法人）</div>',
+                unsafe_allow_html=True)
+
+    if chip_raw.get("available"):
+        it5  = chip_raw["it_net_5d"]
+        fi5  = chip_raw["fi_net_5d"]
+        it_d = chip_raw["it_buy_days"]
+        fi3  = chip_raw["fi_3d_sum"]
+        it3  = chip_raw["it_3d_sum"]
+
+        # 生成每日淨買超的 sparkline 文字表示
+        def spark(vals, unit="張"):
+            bars = ""
+            for v in vals:
+                if v > 500:    bars += "▲"
+                elif v > 0:    bars += "△"
+                elif v > -500: bars += "▽"
+                else:          bars += "▼"
+            return bars
+
+        fi_spark = spark(fi5)
+        it_spark = spark(it5)
+
+        cl  = chip_eval["css_color"]
+        lbl = chip_eval["label"]
+
+        st.markdown(f"""
+        <div class="dna-card" style="border-color:{cl};">
+          <div style="display:flex;justify-content:space-between;
+                      align-items:center;margin-bottom:12px;">
+            <span style="font-size:18px;font-weight:700;color:{cl};">{lbl}</span>
+            <span style="font-size:12px;color:#4a6fa5;">
+              資料來源：FinMind / 證交所法人買賣超
+            </span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:14px;">
+            <div>
+              <div style="color:#4a6fa5;font-size:12px;margin-bottom:4px;">
+                外資近5日走勢（▲買超 ▽賣超）
+              </div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:22px;
+                          letter-spacing:4px;color:#1565c0;">{fi_spark}</div>
+              <div style="color:#1a2b3c;margin-top:4px;">
+                近3日合計：<b style="font-family:'IBM Plex Mono',monospace;
+                color:{'#0a7c59' if fi3>0 else '#c0392b'};">{fi3:+.0f} 張</b>
+              </div>
+            </div>
+            <div>
+              <div style="color:#4a6fa5;font-size:12px;margin-bottom:4px;">
+                投信近5日走勢（▲買超 ▽賣超）
+              </div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:22px;
+                          letter-spacing:4px;color:#d97706;">{it_spark}</div>
+              <div style="color:#1a2b3c;margin-top:4px;">
+                近5日買超 <b style="color:{'#0a7c59' if it_d>=3 else '#1a2b3c'};">
+                {it_d}/5 天</b> ｜ 近3日{it3:+.0f}張
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:10px;font-size:13px;color:#4a6fa5;
+                      border-top:1px solid #c8d8e8;padding-top:8px;">
+            {chip_eval['detail']}
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.info(f"ℹ️ 籌碼資料暫時無法取得（{chip_raw.get('error', 'FinMind 未安裝')}），"
+                f"買點評估改以純技術面判斷。")
 
     render_forward_table(rows, wr["close"])
 
