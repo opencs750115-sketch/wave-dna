@@ -2509,32 +2509,46 @@ def render_watchlist_page(period: str = "2y"):
 
     # ── JSON 匯入匯出 ──────────────────────────────────────────────────
     with st.expander("💾 匯入 / 匯出自選股設定", expanded=False):
-        col_exp, col_imp = st.columns(2)
-        with col_exp:
-            import json as _json
-            wl_data = st.session_state[_WL_KEY]
-            json_str = _json.dumps(
-                {str(k): v for k, v in wl_data.items()},
-                ensure_ascii=False, indent=2
-            )
-            st.download_button(
-                "⬇️ 匯出 JSON", data=json_str,
-                file_name="watchlist.json", mime="application/json",
-                use_container_width=True
-            )
-        with col_imp:
-            uploaded = st.file_uploader("⬆️ 匯入 JSON", type=["json"], label_visibility="collapsed")
-            if uploaded:
+        import json as _json
+
+        # ── 匯出 ──────────────────────────────────────────────────────
+        wl_data  = st.session_state[_WL_KEY]
+        json_str = _json.dumps(
+            {str(k): v for k, v in wl_data.items()},
+            ensure_ascii=False, indent=2
+        )
+        st.markdown("**⬇️ 匯出**：複製以下 JSON 儲存備份，下次貼回即可還原")
+        st.code(json_str, language="json")
+        st.download_button(
+            "⬇️ 下載 watchlist.json", data=json_str,
+            file_name="watchlist.json", mime="application/json",
+            use_container_width=True
+        )
+
+        st.divider()
+
+        # ── 匯入（改用 text_area，避免 file_uploader 反覆觸發 rerun 閃爍）──
+        st.markdown("**⬆️ 匯入**：把之前匯出的 JSON 貼入下方，再按「套用」")
+        imp_text = st.text_area(
+            "貼入 JSON", height=120,
+            placeholder='{"1": {"name": "自選股 1", "tickers": ["2330.TW"]}, ...}',
+            label_visibility="collapsed",
+            key="wl_import_text"
+        )
+        if st.button("✅ 套用匯入", use_container_width=True, key="wl_import_btn"):
+            if imp_text.strip():
                 try:
-                    loaded = _json.loads(uploaded.read())
+                    loaded = _json.loads(imp_text.strip())
                     for k, v in loaded.items():
                         idx = int(k)
                         if 1 <= idx <= _WL_COUNT:
                             st.session_state[_WL_KEY][idx] = v
-                    st.success("✅ 匯入成功")
+                    st.success("✅ 匯入成功！")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ 匯入失敗: {e}")
+                    st.error(f"❌ JSON 格式錯誤: {e}")
+            else:
+                st.warning("請先貼入 JSON 內容")
 
     # ── 五個自選股 Tab ──────────────────────────────────────────────────
     wl_names = [st.session_state[_WL_KEY][i]["name"] for i in range(1, _WL_COUNT + 1)]
