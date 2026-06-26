@@ -1529,40 +1529,98 @@ TW_NAME_MAP = {
     "6175.TWO":"立積","5351.TWO":"鈺創","6147.TWO":"頎邦","3236.TWO":"千如",
     "1815.TWO":"富喬","3707.TWO":"漢磊","8088.TWO":"品安","5347.TWO":"世界",
     "1785.TWO":"光洋科","5425.TWO":"台半","8064.TWO":"歐特邁","6548.TWO":"長華電材",
-    "3264.TWO":"欣銓","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
+    "3264.TW":"欣銓","3264.TWO":"欣銓","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
     "3537.TWO":"堡達","3317.TWO":"金洋科","8069.TWO":"元太","6244.TWO":"茂迪",
     "3663.TWO":"鐿鈦","3357.TWO":"台灣彩光","8096.TWO":"擎亞",
+    # ── ★ 使用者自選股補充（矽光子/CPO/電力/記憶體/被動元件主題）───────
+    "3289.TW":"宜鼎",    "3289.TWO":"宜鼎",
+    "3450.TW":"聯鈞",
+    "4979.TW":"華星光通","4979.TWO":"華星光通",
+    "6451.TW":"訊芯-KY",
+    "3363.TW":"眾達-KY", "3363.TWO":"眾達-KY",
+    "3163.TW":"波若威",  "3163.TWO":"波若威",
+    "4908.TW":"前鼎",    "4908.TWO":"前鼎",
+    "3081.TW":"聯亞",    "3081.TWO":"聯亞",
+    "3406.TW":"玉晶光",
+    "3587.TW":"閎康",    "3587.TWO":"閎康",
+    "6683.TW":"雍智科技","6683.TWO":"雍智科技",
+    "3037.TW":"欣興",
+    "3189.TW":"景碩",
+    "8046.TW":"南電",
+    "6223.TW":"旺矽",    "6223.TWO":"旺矽",
+    "6515.TW":"穎崴",    "6515.TWO":"穎崴",
+    "1609.TW":"大亞",
+    "1503.TW":"士林電機",
+    "1519.TW":"華城",
+    "1513.TW":"中興電",
+    "1504.TW":"東元",
+    "1514.TW":"亞力",
+    "6806.TW":"森崴能源",
+    "1618.TW":"合機",
+    "3006.TW":"晶豪科",
+    "8299.TW":"群聯",    "8299.TWO":"群聯",
+    "6510.TW":"精測",    "6510.TWO":"精測",
+    "6271.TW":"同欣電",
+    "3026.TW":"禾伸堂",
+    "2375.TW":"智寶",
+    "6127.TW":"洋華",    "6127.TWO":"洋華",
+    "3068.TW":"訊雲",    "3068.TWO":"訊雲",
+    "3338.TW":"泰碩",
+    "6173.TW":"信昌電",  "6173.TWO":"信昌電",
 }
 
 def get_stock_name(ticker: str) -> str:
     """
-    取得股票名稱,查詢優先順序:
-      1. TW_NAME_MAP (中文名稱靜態對照表)
-      2. _REALTIME_NAME_CACHE (從即時排行screener取得的英文shortName)
-      3. 回傳代號本身(最終 fallback)
+    取得股票名稱，查詢優先順序：
+      1. TW_NAME_MAP (靜態中文名稱對照表)
+      2. _REALTIME_NAME_CACHE (即時排行 screener 回傳的 shortName)
+      3. _DYNAMIC_NAME_CACHE (動態查詢快取，程式啟動後自動累積)
+      4. 動態查詢 Yahoo Finance Ticker.info → 清理後存入 _DYNAMIC_NAME_CACHE
+      5. 回傳代號本身（最終 fallback）
 
-    ★ 不再呼叫 yf.Ticker(t).info (太慢,批量掃描時每檔要額外多1~2秒)
+    ★ 步驟 4 讓任何新增的股票不需手動補 TW_NAME_MAP 就能顯示中文名。
+      查詢結果快取在 _DYNAMIC_NAME_CACHE（記憶體，session 期間有效）。
     """
-    # 優先: 中文名稱靜態對照表
-    name = TW_NAME_MAP.get(ticker, '')
+    # 1. 靜態中文對照表
+    name = TW_NAME_MAP.get(ticker, "")
     if name:
         return name
 
-    # 次優: 即時排行快取(英文shortName)
-    cached = _REALTIME_NAME_CACHE.get(ticker, '')
+    # 2. 即時排行快取（screener shortName，通常是英文）
+    cached = _REALTIME_NAME_CACHE.get(ticker, "")
     if cached:
-        # 清理常見英文後綴讓顯示簡潔
-        for suffix in [
-            ' CO., LTD.', ' Co., Ltd.', ' CO LTD', ' CO.LTD',
-            ' CORPORATION', ' Corporation', ' Corp.', ' CORP',
-            ' INC.', ' Inc.', ' INC', ' LTD.', ' Ltd.',
-            ' INTERNATIONAL', ' International',
-        ]:
-            cached = cached.replace(suffix, '').replace(suffix.upper(), '')
+        # 清理英文後綴
+        for s in [" CO., LTD.", " Co., Ltd.", " CO LTD", " CORPORATION",
+                  " Corporation", " Corp.", " CORP", " INC.", " Inc.", " INC",
+                  " LTD.", " Ltd.", " INTERNATIONAL", " International"]:
+            cached = cached.replace(s, "").replace(s.upper(), "")
         return cached.strip() or ticker
 
-    # 最終 fallback: 直接回傳代號(不再打額外API)
-    return ticker
+    # 3. 動態快取（之前查詢過的）
+    dyn = _DYNAMIC_NAME_CACHE.get(ticker, "")
+    if dyn:
+        return dyn
+
+    # 4. 動態查詢 Yahoo Finance
+    try:
+        info = yf.Ticker(ticker).info
+        name_raw = info.get("longName") or info.get("shortName") or ""
+        if name_raw:
+            # 清理英文公司後綴，保留中文部分
+            for s in [" CO., LTD.", " Co., Ltd.", " CO LTD", " CORPORATION",
+                      " Corporation", " Corp.", " CORP", " INC.", " Inc.", " INC",
+                      " LTD.", " Ltd.", " CO.", " Co.,Ltd.", " Inc",
+                      " INTERNATIONAL", " International",
+                      ",", "."]:
+                name_raw = name_raw.replace(s, "").replace(s.upper(), "")
+            name_clean = name_raw.strip()
+            if name_clean and name_clean != ticker:
+                _DYNAMIC_NAME_CACHE[ticker] = name_clean
+                return name_clean
+    except Exception:
+        pass
+
+    return ticker  # 最終 fallback
 
 
 def get_chart_url(ticker: str) -> str:
@@ -1769,6 +1827,9 @@ TW_ELECTRONIC_759 = [
 
 # 全域即時名稱快取(從screener結果補充TW_NAME_MAP沒有的英文名)
 _REALTIME_NAME_CACHE: dict[str, str] = {}
+
+# 動態名稱快取(從 Ticker.info 動態查詢的結果，session 期間有效)
+_DYNAMIC_NAME_CACHE: dict[str, str] = {}
 
 
 def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
