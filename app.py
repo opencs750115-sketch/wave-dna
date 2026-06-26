@@ -405,26 +405,24 @@ p, label, div, span { color: #1a2b3c; }
 
 def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame, bool]:
     """
-    ★ 即時報價自動補丁 v4 — 實戰強制放行版
+    ★ 即時報價自動補丁 v5 — session_state 持久化版
     ────────────────────────────────────────────────────────────────────────
-    【架構重點】
-      此函式必須在 @st.cache_data 的快取層「外部」呼叫(見 main() 中的呼叫點)。
-      過去放在 fetch_data 內部時,快取命中就直接回傳舊 df、補丁根本不執行，
-      這才是「點重新整理仍顯示昨天數據」的真正根本原因。
+    【核心問題修正】
+      fetch_data 有 @st.cache_data，Streamlit Cloud 同一 session 連續 rerun
+      時 cache 命中會拿到舊的 df，即使 _patch_today_price 每次都執行，
+      覆蓋的只是當次 in-memory 副本，下次 rerun 又從 cache 拿舊 df，
+      導致截圖看到的價格停在幾分鐘前。
 
-    【強制放行邏輯】
-      台灣交易時段內(週一~週五 09:02 ~ 15:30),無條件強制更新:
-        - need_patch = True (不比對價格差異或成交量落後)
-        - 用 fast_info 的即時快照直接覆蓋或新增今日 K 棒
-      這確保每次 Streamlit 重新執行(使用者點重整/切換股票)都能拿到最新現價。
+    【v5 解法】
+      把 fast_info 的即時結果存入 session_state["_live_{ticker}_{minute}"]。
+      每次 rerun：
+        1. 從 session_state 取出上一次的即時價（< 1 分鐘前）
+        2. 若快取仍有效 → 直接用快取值覆蓋 df（不重打 API）
+        3. 若快取過期（換分鐘）→ 重打 fast_info 取最新值並更新快取
+      這樣無論 fetch_data 快取是否命中，每次 rerun 都能看到最新現價。
 
-    【保留的防護機制】
-      ① 時區剝離: df.index.tz is not None 時強制 tz_localize(None)
-                  防止 yfinance 未來版本帶時區時產生「兩個今天」的比對錯位
-      ② 09:02 開放: 台股 09:00 集合競價,09:02 第一筆撮合通常已完成
-                    比 09:10 提前 8 分鐘讓使用者能更早看到開盤數據
-      ③ OHLC 型態防護: getattr + try/except float 轉換,防 API 回傳異常值
-      ④ day_high/day_low 開盤初期可能為 0: 改用 previous_close 作 fallback
+    【觸發條件】
+      台灣交易時段 09:02~15:30（週一至週五）無條件補丁。
 
     回傳: (df, patched: bool)
     """
@@ -437,72 +435,83 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         if df.empty:
             return df, False
 
-        # ① 時區剝離: 強制 tz-naive,避免 today_ts 比對錯位
+        # 時區剝離
         if df.index.tz is not None:
+            df = df.copy()
             df.index = df.index.tz_localize(None)
-
-        last_date_str = pd.to_datetime(df.index[-1]).strftime('%Y-%m-%d')
 
         # 週末不補
         if now_tw.weekday() >= 5:
             return df, False
 
-        # ② 交易時段: 09:02 ~ 15:30(放寬至 09:02,集合競價首筆已完成)
+        # 只在 09:02 ~ 15:30
         t = now_tw.time()
         if not (datetime.time(9, 2) <= t <= datetime.time(15, 30)):
             return df, False
 
-        # ── 抓取即時快照 ────────────────────────────────────────────
-        fast = yf.Ticker(ticker_str).fast_info
+        # ── session_state 快取即時價（每分鐘一個 key）─────────────────
+        minute_key = now_tw.strftime('%Y%m%d_%H%M')
+        ss_key     = f"_live_{ticker_str}_{minute_key}"
 
-        live_close = getattr(fast, 'last_price', None)
-        if live_close is None or float(live_close) <= 0:
-            return df, False
-        live_close = float(live_close)
-
-        live_volume = getattr(fast, 'last_volume', None)
-        live_volume = int(live_volume) if live_volume is not None else 0
-
-        # ── 無條件強制補丁(交易時段內直接 True) ─────────────────────
-        # 不再比對價格差異或成交量落後,確保每次呼叫都能同步最新現價
-        need_patch = True   # ★ 強制放行
-
-        # ③ 組裝 OHLCV — 加型態防護與開盤初期 fallback ──────────────
-        prev_close = float(getattr(fast, 'regular_market_previous_close', None)
-                           or live_close)
+        live_data  = None
         try:
-            live_open = float(getattr(fast, 'open', None) or live_close)
-            # day_high / day_low 在剛開盤後可能回傳 0,用 previous_close 作下限
-            raw_high  = float(getattr(fast, 'day_high', None) or 0)
-            raw_low   = float(getattr(fast, 'day_low',  None) or 0)
-            # 若高低價異常(=0 或小於 prev_close 的 50%),用安全值替代
-            live_high = raw_high if raw_high > prev_close * 0.5 else max(live_open, live_close)
-            live_low  = raw_low  if raw_low  > prev_close * 0.5 else min(live_open, live_close)
-        except (ValueError, TypeError):
-            live_open = live_high = live_low = live_close
+            live_data = st.session_state.get(ss_key)
+        except Exception:
+            pass
 
-        # OHLC 邏輯終極保護
-        live_high = max(live_high, live_open, live_close)
-        live_low  = min(live_low,  live_open, live_close)
+        if live_data is None:
+            # 快取不存在或已過期 → 重打 fast_info
+            fast       = yf.Ticker(ticker_str).fast_info
+            live_close = getattr(fast, 'last_price', None)
+            if live_close is None or float(live_close) <= 0:
+                return df, False
+            live_close  = float(live_close)
+            prev_close  = float(getattr(fast, 'regular_market_previous_close',
+                                        live_close) or live_close)
+            live_volume = int(getattr(fast, 'last_volume', 0) or 0)
+            try:
+                live_open = float(getattr(fast, 'open', None) or live_close)
+                raw_high  = float(getattr(fast, 'day_high', None) or 0)
+                raw_low   = float(getattr(fast, 'day_low',  None) or 0)
+                live_high = raw_high if raw_high > prev_close * 0.5 else max(live_open, live_close)
+                live_low  = raw_low  if raw_low  > prev_close * 0.5 else min(live_open, live_close)
+            except (ValueError, TypeError):
+                live_open = live_high = live_low = live_close
 
-        today_ts = pd.to_datetime(today_str)   # tz-naive,與剝離後的 df.index 對齊
+            live_high = max(live_high, live_open, live_close)
+            live_low  = min(live_low,  live_open, live_close)
 
-        # ── 就地覆蓋(今天已存在)或新增(今天不存在) ─────────────────
-        patch_vals = [("Open",      live_open),
-                      ("High",      live_high),
-                      ("Low",       live_low),
-                      ("Close",     live_close),
-                      ("Adj Close", live_close),
-                      ("Volume",    live_volume)]
+            live_data = {
+                "close": live_close, "open": live_open,
+                "high": live_high,   "low": live_low,
+                "volume": live_volume,
+            }
+            # 存入 session_state（當分鐘內有效）
+            try:
+                st.session_state[ss_key] = live_data
+            except Exception:
+                pass
 
-        if last_date_str == today_str:
-            # 今天的列已存在 → 直接覆蓋
+        # ── 用即時資料覆蓋或新增今天那一列 ───────────────────────────
+        today_ts  = pd.to_datetime(today_str)
+        last_date = pd.to_datetime(df.index[-1]).strftime('%Y-%m-%d')
+
+        patch_vals = [
+            ("Open",      live_data["open"]),
+            ("High",      live_data["high"]),
+            ("Low",       live_data["low"]),
+            ("Close",     live_data["close"]),
+            ("Adj Close", live_data["close"]),
+            ("Volume",    live_data["volume"]),
+        ]
+
+        if last_date == today_str:
+            df = df.copy()
             for col, val in patch_vals:
                 if col in df.columns:
                     df.loc[today_ts, col] = val
             df = df.sort_index()
         else:
-            # 今天的列不存在 → 新增一列
             new_row = pd.DataFrame(index=pd.DatetimeIndex([today_ts]))
             col_map = {k: v for k, v in patch_vals}
             for col in df.columns:
@@ -513,7 +522,6 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         return df, True
 
     except Exception:
-        # 任何意外(假日/API 異常/網路逾時)皆優雅略過,不中斷主程式
         return df, False
 
 
