@@ -537,7 +537,14 @@ def fetch_data(ticker: str, period: str = "2y",
     candidates = [ticker.upper()]
     t = ticker.strip().upper()
     if "." not in t and t.isdigit():
+        # 純數字：同時嘗試 .TW 和 .TWO
         candidates = [f"{t}.TW", f"{t}.TWO", t]
+    elif t.endswith(".TW") and not t.endswith(".TWO"):
+        # 明確指定 .TW：若找不到資料，自動 fallback .TWO
+        candidates = [t, t.replace(".TW", ".TWO")]
+    elif t.endswith(".TWO"):
+        # 明確指定 .TWO：若找不到資料，自動 fallback .TW
+        candidates = [t, t.replace(".TWO", ".TW")]
 
     for cand in candidates:
         try:
