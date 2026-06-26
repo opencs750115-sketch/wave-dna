@@ -2387,22 +2387,57 @@ def _wl_set_name(idx: int, name: str):
     st.session_state[_WL_KEY][idx]["name"] = name.strip() or f"自選股 {idx}"
 
 
+def _wl_resolve_ticker(ticker: str) -> str:
+    """
+    自動解析台股代號的正確後綴。
+    輸入 '8299' 或 '8299.TW'，若 Yahoo Finance 找不到，自動改試 '.TWO'。
+    回傳能查到資料的正確代號，或原始代號（找不到時）。
+    """
+    import warnings as _w; _w.filterwarnings('ignore')
+
+    # 標準化
+    t = ticker.strip().upper()
+    if t.isdigit():
+        candidates = [f"{t}.TW", f"{t}.TWO"]
+    elif t.endswith('.TW') and not t.endswith('.TWO'):
+        candidates = [t, t.replace('.TW', '.TWO')]
+    elif t.endswith('.TWO'):
+        candidates = [t, t.replace('.TWO', '.TW')]
+    else:
+        return t  # 美股或其他，直接回傳
+
+    for cand in candidates:
+        try:
+            fi = yf.Ticker(cand).fast_info
+            lp = float(getattr(fi, 'last_price', 0) or 0)
+            if lp > 0:
+                return cand
+        except Exception:
+            continue
+
+    return candidates[0]  # fallback 到第一個
+
+
 def _wl_add_ticker(idx: int, ticker: str) -> tuple[bool, str]:
-    """新增代號到自選股，回傳 (成功, 訊息)"""
+    """新增代號到自選股，自動解析正確後綴，回傳 (成功, 訊息)"""
     _wl_init()
     ticker = ticker.strip().upper()
     if not ticker:
         return False, "請輸入代號"
     wl = st.session_state[_WL_KEY][idx]
-    # 標準化: 純數字自動補 .TW
-    if ticker.isdigit():
-        ticker = f"{ticker}.TW"
-    if ticker in wl["tickers"]:
-        return False, f"{ticker} 已在清單中"
     if len(wl["tickers"]) >= _WL_MAX:
         return False, f"每個清單最多 {_WL_MAX} 檔"
-    wl["tickers"].append(ticker)
-    return True, f"✅ 已加入 {ticker}"
+
+    # 自動解析正確後綴（.TW vs .TWO）
+    resolved = _wl_resolve_ticker(ticker)
+
+    if resolved in wl["tickers"]:
+        return False, f"{resolved} 已在清單中"
+
+    # 若解析後不同，提示使用者
+    note = f"（已自動修正為 {resolved}）" if resolved != ticker and '.' in resolved else ""
+    wl["tickers"].append(resolved)
+    return True, f"✅ 已加入 {resolved} {note}"
 
 
 def _wl_remove_ticker(idx: int, ticker: str):
@@ -2426,26 +2461,44 @@ def _wl_move_ticker(idx: int, ticker: str, direction: int):
 @st.cache_data(ttl=60, show_spinner=False)
 def _wl_fetch_quote(ticker: str, _bucket: str = "") -> dict:
     """
-    抓取單檔即時報價（快取 60 秒，盤中每分鐘更新）。
-    回傳: price, chg_pct, volume, prev_close, high, low
+    抓取單檔即時報價（快取 60 秒）。
+    自動嘗試 .TW / .TWO 後綴，確保上櫃股也能查到。
+    回傳: price, chg_pct, volume, prev_close, high, low, resolved_ticker
     """
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        price = float(getattr(fi, 'last_price', 0) or 0)
-        prev  = float(getattr(fi, 'regular_market_previous_close', price) or price)
-        chg   = (price - prev) / prev * 100 if prev > 0 else 0.0
-        return {
-            "price":    round(price, 2),
-            "chg_pct":  round(chg, 2),
-            "volume":   int(getattr(fi, 'last_volume', 0) or 0),
-            "prev":     round(prev, 2),
-            "high":     round(float(getattr(fi, 'day_high', price) or price), 2),
-            "low":      round(float(getattr(fi, 'day_low',  price) or price), 2),
-            "ok":       True,
-        }
-    except Exception:
-        return {"price": 0, "chg_pct": 0, "volume": 0, "prev": 0,
-                "high": 0, "low": 0, "ok": False}
+    empty = {"price": 0, "chg_pct": 0, "volume": 0, "prev": 0,
+             "high": 0, "low": 0, "ok": False, "resolved": ticker}
+
+    # 決定嘗試順序
+    t = ticker.strip().upper()
+    if t.endswith('.TWO'):
+        candidates = [t, t.replace('.TWO', '.TW')]
+    elif t.endswith('.TW') and not t.endswith('.TWO'):
+        candidates = [t, t.replace('.TW', '.TWO')]
+    else:
+        candidates = [t]
+
+    for cand in candidates:
+        try:
+            fi    = yf.Ticker(cand).fast_info
+            price = float(getattr(fi, 'last_price', 0) or 0)
+            if price <= 0:
+                continue
+            prev  = float(getattr(fi, 'regular_market_previous_close', price) or price)
+            chg   = (price - prev) / prev * 100 if prev > 0 else 0.0
+            return {
+                "price":    round(price, 2),
+                "chg_pct":  round(chg, 2),
+                "volume":   int(getattr(fi, 'last_volume', 0) or 0),
+                "prev":     round(prev, 2),
+                "high":     round(float(getattr(fi, 'day_high', price) or price), 2),
+                "low":      round(float(getattr(fi, 'day_low',  price) or price), 2),
+                "ok":       True,
+                "resolved": cand,   # 實際成功的代號
+            }
+        except Exception:
+            continue
+
+    return empty
 
 
 def _wl_scan_one(ticker: str, period: str, _bucket: str = "") -> dict | None:
@@ -2547,6 +2600,33 @@ def render_watchlist_page(period: str = "2y"):
     bucket = _get_cache_bucket()
 
     st.markdown('<div class="section-title">⭐ 自選股看板</div>', unsafe_allow_html=True)
+
+    # ── 一鍵修正代號後綴 ──────────────────────────────────────────────
+    with st.expander("🔧 一鍵修正代號後綴（解決 -- 問題）", expanded=False):
+        st.markdown(
+            "部分上櫃股在 Yahoo Finance 須用 `.TWO` 後綴，"
+            "若自選股顯示 `--`，點下方按鈕自動修正所有清單的後綴。",
+            unsafe_allow_html=False
+        )
+        if st.button("🔍 自動偵測並修正所有清單", key="wl_fix_suffix",
+                     use_container_width=True):
+            fixed_list = []
+            with st.spinner("偵測中，約需 10~30 秒..."):
+                for idx in range(1, _WL_COUNT + 1):
+                    wl = st.session_state[_WL_KEY][idx]
+                    new_tickers = []
+                    for t in wl["tickers"]:
+                        resolved = _wl_resolve_ticker(t)
+                        if resolved != t:
+                            fixed_list.append(f"{t} → {resolved}")
+                        new_tickers.append(resolved)
+                    wl["tickers"] = new_tickers
+            if fixed_list:
+                st.success(f"✅ 已修正 {len(fixed_list)} 個代號：\n" +
+                           "\n".join(f"• {f}" for f in fixed_list))
+                st.rerun()
+            else:
+                st.info("✅ 所有代號後綴均正確，無需修正")
 
     # ── JSON 匯入匯出 ──────────────────────────────────────────────────
     with st.expander("💾 匯入 / 匯出自選股設定", expanded=False):
