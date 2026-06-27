@@ -3469,32 +3469,51 @@ def render_sidebar():
 
         # ── 🚀 雷達掃描控制區 ──────────────────────────────────────────────
         with st.expander("🚀 雷達掃描（快速戰情）", expanded=False):
-            st.markdown(
-                '<div style="font-size:12px;color:#4a6fa5;margin-bottom:8px;">'
-                '輸入要掃描的股票代號（逗號或換行分隔），留空使用預設清單</div>',
-                unsafe_allow_html=True
+
+            # ── 掃描來源 ──────────────────────────────────────────────
+            radar_source = st.radio(
+                "掃描來源",
+                ["📋 自訂清單", "📊 即時成交量排行 100", "📈 即時漲幅排行 100", "📉 即時跌幅排行 100"],
+                index=0,
+                key="radar_source_radio"
             )
-            radar_input = st.text_area(
-                "自選股清單", height=90,
-                value="\n".join(DEFAULT_WATCHLIST),
-                placeholder="8150\n2330\n2454",
-                label_visibility="collapsed",
-                key="radar_input_text"
+
+            # ── 自訂清單（只在選擇自訂時顯示）────────────────────────
+            if radar_source == "📋 自訂清單":
+                st.markdown(
+                    '<div style="font-size:12px;color:#4a6fa5;margin:6px 0 4px;">'
+                    '代號（逗號或換行分隔），留空使用預設清單</div>',
+                    unsafe_allow_html=True
+                )
+                radar_input = st.text_area(
+                    "自選股清單", height=80,
+                    value="\n".join(DEFAULT_WATCHLIST),
+                    placeholder="8150\n2330\n2454",
+                    label_visibility="collapsed",
+                    key="radar_input_text"
+                )
+            else:
+                radar_input = ""
+
+            # ── 勝率門檻 ──────────────────────────────────────────────
+            radar_min_wr = st.slider(
+                "最低勝率門檻 (%)", 0, 90, 50, step=5,
+                help="只顯示勝率 ≥ 此值的標的（0 = 顯示全部）",
+                key="radar_min_wr"
             )
+
+            # ── 掃描按鈕 ──────────────────────────────────────────────
             radar_scan = st.button(
-                "🚀 啟動全市場自選股大掃描",
+                "🚀 啟動雷達大掃描",
                 use_container_width=True,
                 type="primary",
                 key="radar_scan_btn"
             )
             if radar_scan:
-                # 解析代號清單
-                raw_list = radar_input.replace(",", "\n").split("\n")
-                radar_tickers = [t.strip().upper() for t in raw_list if t.strip()]
-                if not radar_tickers:
-                    radar_tickers = list(DEFAULT_WATCHLIST)
-                st.session_state["_radar_tickers"] = radar_tickers
-                st.session_state["_radar_trigger"] = True
+                st.session_state["_radar_source"]  = radar_source
+                st.session_state["_radar_input"]   = radar_input
+                st.session_state["_radar_min_wr"]  = radar_min_wr
+                st.session_state["_radar_trigger"]  = True
 
         st.markdown("---")
 
@@ -3809,137 +3828,189 @@ def main():
     #  🚀 雷達掃描戰情表（優先顯示在最頂部）
     # ════════════════════════════════════════════════════════════════════
     if st.session_state.get("_radar_trigger"):
-        st.session_state["_radar_trigger"] = False  # 重置觸發旗標
-        radar_tickers = st.session_state.get("_radar_tickers", DEFAULT_WATCHLIST)
+        st.session_state["_radar_trigger"] = False
 
-        st.markdown("""
-        <div class="section-title">🚀 雷達掃描戰情表 — 黃金起漲偵測</div>
+        radar_source = st.session_state.get("_radar_source", "📋 自訂清單")
+        radar_input  = st.session_state.get("_radar_input",  "")
+        radar_min_wr = st.session_state.get("_radar_min_wr", 50)
+
+        # ── 決定掃描代號清單 ──────────────────────────────────────────
+        rank_map = {
+            "📊 即時成交量排行 100": "volume",
+            "📈 即時漲幅排行 100":  "gain",
+            "📉 即時跌幅排行 100":  "loss",
+        }
+
+        if radar_source in rank_map:
+            with st.spinner(f"⏳ 正在抓取 Yahoo Finance {radar_source}..."):
+                radar_tickers, realtime_meta, ok, msg = fetch_tw_realtime_hot(
+                    rank_map[radar_source], 100
+                )
+            if not ok or not radar_tickers:
+                st.warning(f"⚠️ 即時排行抓取失敗（{msg}），改用預設清單")
+                radar_tickers = list(DEFAULT_WATCHLIST)
+                realtime_meta = []
+            source_label = radar_source
+        else:
+            # 自訂清單
+            raw_list = radar_input.replace(",", "\n").split("\n")
+            radar_tickers = [t.strip().upper() for t in raw_list if t.strip()]
+            if not radar_tickers:
+                radar_tickers = list(DEFAULT_WATCHLIST)
+            realtime_meta = []
+            source_label = f"📋 自訂清單 ({len(radar_tickers)} 檔)"
+
+        st.markdown(f"""
+        <div class="section-title">🚀 雷達掃描戰情表 — {source_label}</div>
         """, unsafe_allow_html=True)
 
         st.markdown(f"""
         <div style="font-size:13px;color:#4a6fa5;background:#eaf2fb;
                     border-left:4px solid #1565c0;padding:10px 16px;
                     border-radius:6px;margin-bottom:14px;">
-          ⚡ 正在掃描 <b>{len(radar_tickers)}</b> 支標的，
-          篩選「五大黃金條件全部成立」的個股…
-        </div>
-        """, unsafe_allow_html=True)
-
-        prog = st.progress(0.0, text="🔬 掃描中...")
-        with st.spinner(""):
-            radar_results = run_radar_scan(radar_tickers, period=period)
-        prog.progress(1.0, text="✅ 掃描完成")
-        import time as _t; _t.sleep(0.4)
-        prog.empty()
-
-        # 篩選五大條件全綠的個股
-        golden = [r for r in radar_results if r.get("all_green")]
-        golden.sort(key=lambda x: x["買點分數"], reverse=True)
-
-        bar_color = {"top":"#0a7c59","mid":"#d97706","warn":"#c0392b"}
-
-        if not golden:
-            st.info(
-                "⏳ 當前自選股均處於波動或過熱階段，"
-                "尚未觸發週期生理鐘扣滿訊號，請保持耐心。"
-            )
-        else:
-            st.markdown(
-                f'<div class="section-title">🎯 黃金買點標的 ({len(golden)} 檔) '
-                f'— 五大條件全部成立</div>',
-                unsafe_allow_html=True
-            )
-
-        # 無論有無黃金標的，顯示所有掃描結果（依買點分數排序）
-        all_sorted = sorted(radar_results, key=lambda x: x["買點分數"], reverse=True)
-
-        rows_html = ""
-        for i, r in enumerate(all_sorted, 1):
-            code  = r["代號"]
-            name  = r["股名"]
-            url   = get_chart_url(code)
-            score = r["買點分數"]
-            sig   = r["買點訊號"]
-            rc    = r["R_cycle"]
-            wr_v  = r["勝率"]
-            d1    = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
-            d2    = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
-            cat   = r["category"]
-            bc    = bar_color.get(cat, "#1565c0")
-            is_g  = r.get("all_green")
-
-            sc_color = ("#c0392b" if "共振" in sig else "#0a7c59" if score >= 80
-                        else "#1565c0" if score >= 65 else "#d97706" if score >= 50
-                        else "#9e9e9e")
-            rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
-            row_bg   = "#fff8e1" if is_g else ("#f7fafd" if i % 2 == 0 else "#fff")
-            golden_mark = "🎯 " if is_g else ""
-
-            # cond 圖示
-            c = r.get("conds", {})
-            ci = lambda v: "✅" if v else "❌"
-            cond_str = (f"{ci(c.get('c3_rcycle'))}R "
-                        f"{ci(c.get('c4_kd'))}KD "
-                        f"{ci(c.get('c1_mid'))}蓄 "
-                        f"{ci(c.get('c2_wr'))}勝 "
-                        f"{ci(c.get('c5_vol'))}量")
-
-            rows_html += f"""
-            <tr style="background:{row_bg};">
-              <td style="text-align:center;font-size:12px;color:#7a9bbf;">{i}</td>
-              <td>
-                <a href="{url}" target="_blank"
-                   style="color:#1565c0;font-weight:700;font-size:13px;
-                          font-family:'IBM Plex Mono',monospace;text-decoration:none;">
-                  {golden_mark}{code}</a>
-              </td>
-              <td style="font-size:12px;color:#1a2b3c;">{name}</td>
-              <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
-                         font-size:14px;color:#1a2b3c;">{r['現價']}</td>
-              <td style="color:{rc_color};font-weight:700;font-size:13px;
-                         font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
-              <td>
-                <div style="display:flex;align-items:center;gap:5px;">
-                  <div style="width:40px;background:#c8d8e8;border-radius:3px;
-                              height:7px;overflow:hidden;">
-                    <div style="width:{min(wr_v,100):.0f}%;height:7px;background:{bc};"></div>
-                  </div>
-                  <span style="color:{bc};font-weight:700;font-size:12px;">{wr_v:.0f}%</span>
-                </div>
-              </td>
-              <td style="font-size:11px;letter-spacing:1px;">{cond_str}</td>
-              <td style="font-weight:700;color:{sc_color};font-size:13px;
-                         white-space:nowrap;">{score}分 {sig[:4]}</td>
-              <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
-                         color:#1565c0;font-weight:700;text-align:center;">{d1}</td>
-              <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
-                         color:#d97706;font-weight:700;text-align:center;">{d2}</td>
-            </tr>"""
-
-        st.markdown(f"""
-        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
-        <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:850px;">
-          <thead>
-            <tr style="background:#1565c0;color:#fff;font-size:11px;">
-              <th style="padding:8px 5px;width:28px;">#</th>
-              <th style="padding:8px;text-align:left;min-width:90px;">代號</th>
-              <th style="padding:8px;text-align:left;min-width:65px;">股名</th>
-              <th style="padding:8px;text-align:left;min-width:75px;">現價</th>
-              <th style="padding:8px;text-align:left;min-width:70px;">R_cycle</th>
-              <th style="padding:8px;text-align:left;min-width:90px;">勝率</th>
-              <th style="padding:8px;text-align:left;min-width:120px;">五大條件</th>
-              <th style="padding:8px;text-align:left;min-width:95px;">買點評估</th>
-              <th style="padding:8px;text-align:center;min-width:65px;">D+1下限</th>
-              <th style="padding:8px;text-align:center;min-width:65px;">D+2下限</th>
-            </tr>
-          </thead>
-          <tbody>{rows_html}</tbody>
-        </table>
-        </div>
-        <div style="font-size:11px;color:#7a9bbf;margin-top:8px;text-align:right;">
+          ⚡ 掃描 <b>{len(radar_tickers)}</b> 支標的，
+          勝率門檻 ≥ <b style="color:#0a7c59;">{radar_min_wr}%</b>，
           🎯 黃底 = 五大黃金條件全部成立
         </div>
         """, unsafe_allow_html=True)
+
+        # 若為即時排行，先顯示排行預覽
+        if realtime_meta:
+            prev_rows = ""
+            for j, m in enumerate(realtime_meta[:10], 1):
+                sym  = m["symbol"]
+                nm   = TW_NAME_MAP.get(sym, m["name"][:14] if m["name"] else "--")
+                chg  = m["chg_pct"]
+                cc   = "#0a7c59" if chg > 0 else "#c0392b"
+                prev_rows += (f"<tr><td style='color:#7a9bbf;text-align:center;'>{j}</td>"
+                              f"<td style='font-family:IBM Plex Mono,monospace;color:#1565c0;"
+                              f"font-weight:700;'>{sym}</td>"
+                              f"<td style='color:#1a2b3c;font-size:12px;'>{nm}</td>"
+                              f"<td style='font-family:IBM Plex Mono,monospace;font-weight:700;'>"
+                              f"{m['price']:.2f}</td>"
+                              f"<td style='color:{cc};font-weight:700;'>{chg:+.2f}%</td>"
+                              f"<td style='color:#4a6fa5;font-size:12px;'>"
+                              f"{m['volume']//1000:,}張</td></tr>")
+            with st.expander(f"📋 {radar_source} 前10筆預覽", expanded=False):
+                st.markdown(f"""
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                  <thead><tr style="background:#1565c0;color:#fff;">
+                    <th style="padding:6px;">#</th><th>代號</th><th>股名</th>
+                    <th>現價</th><th>漲跌</th><th>成交量</th>
+                  </tr></thead><tbody>{prev_rows}</tbody>
+                </table>""", unsafe_allow_html=True)
+
+        prog = st.progress(0.0, text="🔬 DNA 掃描中...")
+        radar_results = run_radar_scan(radar_tickers, period=period)
+        prog.progress(1.0, text="✅ 掃描完成")
+        import time as _t; _t.sleep(0.3)
+        prog.empty()
+
+        # ── 勝率篩選 ──────────────────────────────────────────────────
+        filtered = [r for r in radar_results if r["勝率"] >= radar_min_wr]
+        golden   = [r for r in filtered if r.get("all_green")]
+        golden.sort(key=lambda x: x["買點分數"], reverse=True)
+        all_sorted = sorted(filtered, key=lambda x: x["買點分數"], reverse=True)
+
+        # ── 統計摘要 ──────────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("掃描總數", f"{len(radar_results)} 檔")
+        c2.metric(f"勝率≥{radar_min_wr}%", f"{len(filtered)} 檔")
+        c3.metric("🎯 黃金標的", f"{len(golden)} 檔")
+        c4.metric("掃描失敗", f"{len(radar_tickers)-len(radar_results)} 檔")
+
+        if not filtered:
+            st.info(f"⏳ 當前所有標的勝率均低於 {radar_min_wr}%，建議降低門檻重試。")
+        else:
+            if not golden:
+                st.info("⏳ 當前自選股均處於波動或過熱階段，尚未觸發週期生理鐘扣滿訊號，請保持耐心。")
+
+        # ── 戰情表 ────────────────────────────────────────────────────
+        if all_sorted:
+            bar_color = {"top":"#0a7c59","mid":"#d97706","warn":"#c0392b"}
+            rows_html = ""
+            for i, r in enumerate(all_sorted, 1):
+                code  = r["代號"]
+                name  = r["股名"]
+                url   = get_chart_url(code)
+                score = r["買點分數"]
+                sig   = r["買點訊號"]
+                rc    = r["R_cycle"]
+                wr_v  = r["勝率"]
+                d1    = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+                d2    = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+                cat   = r["category"]
+                bc    = bar_color.get(cat, "#1565c0")
+                is_g  = r.get("all_green")
+
+                sc_color = ("#c0392b" if "共振" in sig else "#0a7c59" if score >= 80
+                            else "#1565c0" if score >= 65 else "#d97706" if score >= 50
+                            else "#9e9e9e")
+                rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+                row_bg   = "#fff8e1" if is_g else ("#f7fafd" if i % 2 == 0 else "#fff")
+                gmark    = "🎯 " if is_g else ""
+                c = r.get("conds", {})
+                ci = lambda v: "✅" if v else "❌"
+                cond_str = (f"{ci(c.get('c3_rcycle'))}R "
+                            f"{ci(c.get('c4_kd'))}KD "
+                            f"{ci(c.get('c1_mid'))}蓄 "
+                            f"{ci(c.get('c2_wr'))}勝 "
+                            f"{ci(c.get('c5_vol'))}量")
+
+                rows_html += f"""
+                <tr style="background:{row_bg};">
+                  <td style="text-align:center;font-size:12px;color:#7a9bbf;">{i}</td>
+                  <td><a href="{url}" target="_blank"
+                     style="color:#1565c0;font-weight:700;font-size:13px;
+                            font-family:'IBM Plex Mono',monospace;text-decoration:none;">
+                    {gmark}{code}</a></td>
+                  <td style="font-size:12px;color:#1a2b3c;">{name}</td>
+                  <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                             font-size:14px;color:#1a2b3c;">{r['現價']}</td>
+                  <td style="color:{rc_color};font-weight:700;font-size:13px;
+                             font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:5px;">
+                      <div style="width:40px;background:#c8d8e8;border-radius:3px;
+                                  height:7px;overflow:hidden;">
+                        <div style="width:{min(wr_v,100):.0f}%;height:7px;background:{bc};"></div>
+                      </div>
+                      <span style="color:{bc};font-weight:700;font-size:12px;">{wr_v:.0f}%</span>
+                    </div>
+                  </td>
+                  <td style="font-size:11px;letter-spacing:1px;">{cond_str}</td>
+                  <td style="font-weight:700;color:{sc_color};font-size:13px;
+                             white-space:nowrap;">{score}分 {sig[:4]}</td>
+                  <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                             color:#1565c0;font-weight:700;text-align:center;">{d1}</td>
+                  <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                             color:#d97706;font-weight:700;text-align:center;">{d2}</td>
+                </tr>"""
+
+            st.markdown(f"""
+            <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:850px;">
+              <thead>
+                <tr style="background:#1565c0;color:#fff;font-size:11px;">
+                  <th style="padding:8px 5px;width:28px;">#</th>
+                  <th style="padding:8px;text-align:left;min-width:90px;">代號</th>
+                  <th style="padding:8px;text-align:left;min-width:65px;">股名</th>
+                  <th style="padding:8px;text-align:left;min-width:75px;">現價</th>
+                  <th style="padding:8px;text-align:left;min-width:70px;">R_cycle</th>
+                  <th style="padding:8px;text-align:left;min-width:90px;">勝率</th>
+                  <th style="padding:8px;text-align:left;min-width:120px;">五大條件</th>
+                  <th style="padding:8px;text-align:left;min-width:95px;">買點評估</th>
+                  <th style="padding:8px;text-align:center;min-width:65px;">D+1下限</th>
+                  <th style="padding:8px;text-align:center;min-width:65px;">D+2下限</th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table>
+            </div>
+            <div style="font-size:11px;color:#7a9bbf;margin-top:8px;text-align:right;">
+              🎯 黃底 = 五大黃金條件全部成立
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("---")
 
