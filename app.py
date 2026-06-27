@@ -1430,7 +1430,7 @@ TW_NAME_MAP = {
     "6488.TWO":"環球晶",
     # 金融
     "2882.TW":"國泰金","2881.TW":"富邦金","2886.TW":"兆豐金","2891.TW":"中信金",
-    "2884.TW":"玉山金","2885.TW":"元大金","2887.TW":"台新金","2892.TW":"第一金",
+    "2884.TW":"玉山金","2885.TW":"元大金","2887.TW":"台新新光金","2892.TW":"第一金",
     "2801.TW":"彰銀","5880.TW":"合庫金",
     # 傳產/原物料
     "1301.TW":"台塑","1303.TW":"南亞","1326.TW":"台化","2002.TW":"中鋼",
@@ -1441,7 +1441,7 @@ TW_NAME_MAP = {
     "5608.TW":"四維航","2617.TW":"台航","2618.TW":"長榮航","2606.TW":"裕民",
     "2637.TW":"慧洋-KY","2634.TW":"漢翔",
     # 光電/面板
-    "3481.TW":"群創","2409.TW":"友達","6409.TW":"旭隼","2449.TW":"京元電",
+    "3481.TW":"群創","2409.TW":"友達","6409.TW":"旭隼","2449.TW":"京元電子",
     "3035.TW":"智原","2395.TW":"研華","5269.TW":"祥碩","3653.TW":"健策",
     # 熱門電子股
     "2356.TW":"英業達","2353.TW":"宏碁","2352.TW":"佳世達","2347.TW":"聯強",
@@ -1465,7 +1465,7 @@ TW_NAME_MAP = {
     "2428.TW":"興勤","2429.TW":"銘異","2430.TW":"燦坤","2431.TW":"聯昌",
     "2432.TW":"倚強","2433.TW":"互動","2434.TW":"統一實","2436.TW":"偉詮電",
     "2438.TW":"翔耀","2439.TW":"美律","2440.TW":"太空梭","2441.TW":"超豐",
-    "2442.TW":"新美齊","2444.TW":"兆赫","2449.TW":"京元電","2450.TW":"神腦",
+    "2442.TW":"新美齊","2444.TW":"兆赫","2449.TW":"京元電子","2450.TW":"神腦",
     "2451.TW":"創見","2453.TW":"凌群","2454.TW":"聯發科","2455.TW":"全新",
     "2457.TW":"飛宏","2458.TW":"義隆","2459.TW":"敦吉","2460.TW":"建通",
     "2461.TW":"光群雷","2462.TW":"白金","2464.TW":"盟立","2465.TW":"麗臺",
@@ -1490,10 +1490,10 @@ TW_NAME_MAP = {
     "3150.TW":"萬旭","3163.TWO":"波若威","3189.TW":"景碩","3191.TWO":"和進",
     "3209.TWO":"全科","3211.TW":"盈正豫順","3213.TWO":"茂順","3231.TW":"緯創",
     "3232.TW":"昱捷","3290.TW":"東成","3293.TW":"鈊象","3296.TW":"勝德",
-    "3305.TW":"昇貿","3311.TW":"閎康","3312.TW":"弘憶股","3374.TW":"精材",
+    "3305.TW":"昇貿","3311.TW":"閎暉","3312.TW":"弘憶股","3374.TW":"精材",
     "3376.TW":"新日興","3380.TW":"明泰","3382.TW":"瀛通","3388.TW":"崇越電",
-    "3406.TW":"玉晶光電","3413.TW":"京鼎","3416.TW":"融程電","3419.TW":"譜瑞-KY",
-    "3432.TW":"台端","3437.TW":"榮創","3450.TW":"聯鈞光電","3466.TWO":"聚積",
+    "3406.TW":"玉晶光","3413.TW":"京鼎","3416.TW":"融程電","3419.TW":"譜瑞-KY",
+    "3432.TW":"台端","3437.TW":"榮創","3450.TW":"聯鈞","3466.TWO":"聚積",
     "3481.TW":"群創","3515.TW":"華擎","3519.TW":"亦強","3529.TW":"力旺",
     "3530.TW":"晶相光","3532.TW":"台勝科","3534.TW":"昱晶","3536.TWO":"祥富水電",
     "3545.TW":"敦泰","3548.TW":"兆利","3550.TW":"台灣精銳","3551.TW":"世禾",
@@ -1520,7 +1520,7 @@ TW_NAME_MAP = {
     "3481.TW":"群創","2409.TW":"友達","6116.TW":"彩晶","2002.TW":"中鋼",
     "2344.TW":"華邦電","2303.TW":"聯電","6770.TW":"力積電","1301.TW":"台塑",
     "2408.TW":"南亞科","2890.TW":"永豐金","1303.TW":"南亞","2883.TW":"開發金",
-    "2337.TW":"旺宏","1802.TW":"台玻","6182.TWO":"環球晶","2887.TW":"台新金",
+    "2337.TW":"旺宏","1802.TW":"台玻","6182.TWO":"環球晶","2887.TW":"台新新光金",
     "2884.TW":"玉山金","2610.TW":"華航","2327.TW":"國巨","2892.TW":"第一金",
     "2886.TW":"兆豐金","2324.TW":"仁寶","2317.TW":"鴻海","2492.TW":"華新科",
     "2880.TW":"華南金","2618.TW":"長榮航","6239.TW":"力成","1605.TW":"華新",
@@ -1530,34 +1530,34 @@ TW_NAME_MAP = {
     "5297.TWO":"三星科技","6586.TWO":"豐藝","6603.TWO":"富鴻網","6432.TWO":"亞信",
     "6919.TW":"凱萊英","6259.TWO":"百威達","4741.TWO":"亞朋","1409.TW":"新纖",
     "2399.TW":"映泰","3576.TW":"聯合再生","5230.TWO":"友鴻","2605.TW":"新興",
-    "2472.TW":"立隆","2483.TW":"百容","2449.TW":"京元電","2406.TW":"國碩",
+    "2472.TW":"立隆","2483.TW":"百容","2449.TW":"京元電子","2406.TW":"國碩",
     # ── 上櫃熱門補充 ──────────────────────────────────────────────────
     "5328.TWO":"聯發","3105.TWO":"穩懋","8043.TWO":"瞬曜","6207.TWO":"雷科",
     "6175.TWO":"立積","5351.TWO":"鈺創","6147.TWO":"頎邦","3236.TWO":"千如",
     "1815.TWO":"富喬","3707.TWO":"漢磊","8088.TWO":"品安","5347.TWO":"世界",
     "1785.TWO":"光洋科","5425.TWO":"台半","8064.TWO":"歐特邁","6548.TWO":"長華電材",
-    "3264.TW":"欣銓科技","3264.TWO":"欣銓科技","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
+    "3264.TW":"欣銓","3264.TWO":"欣銓","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
     "3537.TWO":"堡達","3317.TWO":"金洋科","8069.TWO":"元太","6244.TWO":"茂迪",
     "3663.TWO":"鐿鈦","3357.TWO":"台灣彩光","8096.TWO":"擎亞",
     # ── ★ 使用者自選股補充（矽光子/CPO/電力/記憶體/被動元件主題）───────
-    "3289.TW":"宜特科技",    "3289.TWO":"宜特科技",
-    "3450.TW":"聯鈞光電",
-    "4979.TW":"華星光通","4979.TWO":"華星光通",
+    "3289.TW":"宜特",    "3289.TWO":"宜特",
+    "3450.TW":"聯鈞",
+    "4979.TW":"華星光","4979.TWO":"華星光",
     "6451.TW":"訊芯-KY",
-    "3363.TW":"眾達-KY", "3363.TWO":"眾達-KY",
+    "3363.TW":"上詮", "3363.TWO":"上詮",
     "3163.TW":"波若威",  "3163.TWO":"波若威",
-    "4908.TW":"前鼎光電",    "4908.TWO":"前鼎光電",
-    "3081.TW":"聯亞光電",    "3081.TWO":"聯亞光電",
-    "3406.TW":"玉晶光電",
-    "3587.TW":"閎康科技",    "3587.TWO":"閎康科技",
+    "4908.TW":"前鼎",    "4908.TWO":"前鼎",
+    "3081.TW":"聯亞",    "3081.TWO":"聯亞",
+    "3406.TW":"玉晶光",
+    "3587.TW":"閎康",    "3587.TWO":"閎康",
     "6683.TW":"雍智科技","6683.TWO":"雍智科技",
     "3037.TW":"欣興",
     "3189.TW":"景碩",
     "8046.TW":"南電",
-    "6223.TW":"旺矽科技",    "6223.TWO":"旺矽科技",
-    "6515.TW":"穎崴科技",    "6515.TWO":"穎崴科技",
+    "6223.TW":"旺矽",    "6223.TWO":"旺矽",
+    "6515.TW":"穎崴",    "6515.TWO":"穎崴",
     "1609.TW":"大亞",
-    "1503.TW":"士林電機",
+    "1503.TW":"士電",
     "1519.TW":"華城",
     "1513.TW":"中興電",
     "1504.TW":"東元",
@@ -1565,60 +1565,68 @@ TW_NAME_MAP = {
     "6806.TW":"森崴能源",
     "1618.TW":"合機",
     "3006.TW":"晶豪科",
-    "8299.TW":"群聯電子",    "8299.TWO":"群聯電子",
-    "6510.TW":"精測電子",    "6510.TWO":"精測電子",
+    "8299.TW":"群聯",    "8299.TWO":"群聯",
+    "6510.TW":"精測",    "6510.TWO":"精測",
     "6271.TW":"同欣電",
     "3026.TW":"禾伸堂",
     "2375.TW":"智寶",
-    "6127.TW":"洋華光電",    "6127.TWO":"洋華光電",
+    "6127.TW":"九豪",    "6127.TWO":"九豪",
     "3068.TW":"訊雲",    "3068.TWO":"訊雲",
     "3338.TW":"泰碩",
-    "6173.TW":"信昌電陶",  "6173.TWO":"信昌電陶",
+    "6173.TW":"信昌電",  "6173.TWO":"信昌電",
 }
 
 def get_stock_name(ticker: str) -> str:
     """
-    取得股票名稱，查詢優先順序：
-      1. TW_NAME_MAP (靜態中文名稱對照表)
-      2. _REALTIME_NAME_CACHE (即時排行 screener 回傳的 shortName)
-      3. _DYNAMIC_NAME_CACHE (動態查詢快取，程式啟動後自動累積)
-      4. 動態查詢 Yahoo Finance Ticker.info → 清理後存入 _DYNAMIC_NAME_CACHE
-      5. 回傳代號本身（最終 fallback）
-
-    ★ 步驟 4 讓任何新增的股票不需手動補 TW_NAME_MAP 就能顯示中文名。
-      查詢結果快取在 _DYNAMIC_NAME_CACHE（記憶體，session 期間有效）。
+    取得股票中文名稱，查詢優先順序：
+      1. _OFFICIAL_NAME_CACHE — 台灣證交所/櫃買中心官方 API（最準確）
+      2. TW_NAME_MAP          — 靜態對照表（備用，部分特殊股票）
+      3. _REALTIME_NAME_CACHE — 即時排行 screener 的 shortName
+      4. _DYNAMIC_NAME_CACHE  — 動態查詢快取
+      5. yf.Ticker.info       — 動態查詢（慢，僅在其他方式都找不到時）
+      6. ticker 本身          — 最終 fallback
     """
-    # 1. 靜態中文對照表
+    # 1. 官方 API（最準確，動態更新）
+    official = _load_official_names()
+    name = official.get(ticker, "")
+    if name:
+        return name
+
+    # 上市股可能用 .TW，但官方是 .TWO，或反之，嘗試另一種後綴
+    if not name and ticker.endswith(".TW") and not ticker.endswith(".TWO"):
+        name = official.get(ticker.replace(".TW", ".TWO"), "")
+    if not name and ticker.endswith(".TWO"):
+        name = official.get(ticker.replace(".TWO", ".TW"), "")
+    if name:
+        return name
+
+    # 2. 靜態對照表（備用）
     name = TW_NAME_MAP.get(ticker, "")
     if name:
         return name
 
-    # 2. 即時排行快取（screener shortName，通常是英文）
+    # 3. 即時排行快取
     cached = _REALTIME_NAME_CACHE.get(ticker, "")
     if cached:
-        # 清理英文後綴
         for s in [" CO., LTD.", " Co., Ltd.", " CO LTD", " CORPORATION",
                   " Corporation", " Corp.", " CORP", " INC.", " Inc.", " INC",
-                  " LTD.", " Ltd.", " INTERNATIONAL", " International"]:
+                  " LTD.", " Ltd.", " CO.", " International", " INTERNATIONAL"]:
             cached = cached.replace(s, "").replace(s.upper(), "")
         return cached.strip() or ticker
 
-    # 3. 動態快取（之前查詢過的）
+    # 4. 動態快取
     dyn = _DYNAMIC_NAME_CACHE.get(ticker, "")
     if dyn:
         return dyn
 
-    # 4. 動態查詢 Yahoo Finance
+    # 5. 動態查詢 Yahoo Finance（慢，最後手段）
     try:
         info = yf.Ticker(ticker).info
         name_raw = info.get("longName") or info.get("shortName") or ""
         if name_raw:
-            # 清理英文公司後綴，保留中文部分
             for s in [" CO., LTD.", " Co., Ltd.", " CO LTD", " CORPORATION",
                       " Corporation", " Corp.", " CORP", " INC.", " Inc.", " INC",
-                      " LTD.", " Ltd.", " CO.", " Co.,Ltd.", " Inc",
-                      " INTERNATIONAL", " International",
-                      ",", "."]:
+                      " LTD.", " Ltd.", " CO.", ",", "."]:
                 name_raw = name_raw.replace(s, "").replace(s.upper(), "")
             name_clean = name_raw.strip()
             if name_clean and name_clean != ticker:
@@ -1627,7 +1635,7 @@ def get_stock_name(ticker: str) -> str:
     except Exception:
         pass
 
-    return ticker  # 最終 fallback
+    return ticker
 
 
 def get_chart_url(ticker: str) -> str:
@@ -1843,6 +1851,63 @@ DEFAULT_WATCHLIST = [
 
 # 動態名稱快取(從 Ticker.info 動態查詢的結果，session 期間有效)
 _DYNAMIC_NAME_CACHE: dict[str, str] = {}
+
+# ★ 官方名稱資料庫（從台灣證交所+櫃買中心 OpenAPI 動態載入）
+# 比靜態 TW_NAME_MAP 更準確，永遠與官方保持同步
+_OFFICIAL_NAME_CACHE: dict[str, str] = {}
+
+def _load_official_names() -> dict[str, str]:
+    """
+    從台灣證交所(TWSE)與櫃買中心(TPEX) OpenAPI 載入完整股票中文名稱。
+    每次 App 啟動時呼叫一次，結果快取在 _OFFICIAL_NAME_CACHE。
+
+    資料來源（完全免費、官方、無需 API key）：
+      - TWSE: https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL
+      - TPEX: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes
+    """
+    global _OFFICIAL_NAME_CACHE
+    if _OFFICIAL_NAME_CACHE:
+        return _OFFICIAL_NAME_CACHE   # 已載入，直接回傳
+
+    try:
+        import requests as _req
+        result = {}
+
+        # 上市股 (TWSE)
+        try:
+            r = _req.get(
+                "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8
+            )
+            for item in r.json():
+                code = item.get('Code', '').strip()
+                name = item.get('Name', '').strip()
+                if code and name and code.isdigit():
+                    result[f"{code}.TW"] = name
+        except Exception:
+            pass
+
+        # 上櫃股 (TPEX)
+        try:
+            r2 = _req.get(
+                "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8
+            )
+            for item in r2.json():
+                code = item.get('SecuritiesCompanyCode', '').strip()
+                name = item.get('CompanyName', '').strip()
+                if code and name and code.isdigit():
+                    result[f"{code}.TWO"] = name
+        except Exception:
+            pass
+
+        _OFFICIAL_NAME_CACHE = result
+    except Exception:
+        pass
+
+    return _OFFICIAL_NAME_CACHE
 
 
 def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
@@ -3803,6 +3868,9 @@ def render_forward_table(rows: list[dict], last_close: float):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
+    # ── 啟動時預載官方股票名稱資料庫（TWSE + TPEX OpenAPI）────────────
+    # 背景靜默載入，失敗不影響主程式，載入後 get_stock_name 自動使用
+    _load_official_names()
     (ticker_raw, period, top_n, analyze,
      scan, custom_raw, min_wr, use_hot100, mode,
      scan_universe, scan_mode, min_entry_score) = render_sidebar()
