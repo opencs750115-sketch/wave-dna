@@ -1492,8 +1492,8 @@ TW_NAME_MAP = {
     "3232.TW":"昱捷","3290.TW":"東成","3293.TW":"鈊象","3296.TW":"勝德",
     "3305.TW":"昇貿","3311.TW":"閎康","3312.TW":"弘憶股","3374.TW":"精材",
     "3376.TW":"新日興","3380.TW":"明泰","3382.TW":"瀛通","3388.TW":"崇越電",
-    "3406.TW":"玉晶光","3413.TW":"京鼎","3416.TW":"融程電","3419.TW":"譜瑞-KY",
-    "3432.TW":"台端","3437.TW":"榮創","3450.TW":"聯鈞","3466.TWO":"聚積",
+    "3406.TW":"玉晶光電","3413.TW":"京鼎","3416.TW":"融程電","3419.TW":"譜瑞-KY",
+    "3432.TW":"台端","3437.TW":"榮創","3450.TW":"聯鈞光電","3466.TWO":"聚積",
     "3481.TW":"群創","3515.TW":"華擎","3519.TW":"亦強","3529.TW":"力旺",
     "3530.TW":"晶相光","3532.TW":"台勝科","3534.TW":"昱晶","3536.TWO":"祥富水電",
     "3545.TW":"敦泰","3548.TW":"兆利","3550.TW":"台灣精銳","3551.TW":"世禾",
@@ -1536,26 +1536,26 @@ TW_NAME_MAP = {
     "6175.TWO":"立積","5351.TWO":"鈺創","6147.TWO":"頎邦","3236.TWO":"千如",
     "1815.TWO":"富喬","3707.TWO":"漢磊","8088.TWO":"品安","5347.TWO":"世界",
     "1785.TWO":"光洋科","5425.TWO":"台半","8064.TWO":"歐特邁","6548.TWO":"長華電材",
-    "3264.TW":"欣銓","3264.TWO":"欣銓","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
+    "3264.TW":"欣銓科技","3264.TWO":"欣銓科技","3362.TWO":"先豐","3441.TWO":"聯一光","3260.TWO":"偉詮電",
     "3537.TWO":"堡達","3317.TWO":"金洋科","8069.TWO":"元太","6244.TWO":"茂迪",
     "3663.TWO":"鐿鈦","3357.TWO":"台灣彩光","8096.TWO":"擎亞",
     # ── ★ 使用者自選股補充（矽光子/CPO/電力/記憶體/被動元件主題）───────
-    "3289.TW":"宜鼎",    "3289.TWO":"宜鼎",
-    "3450.TW":"聯鈞",
+    "3289.TW":"宜特科技",    "3289.TWO":"宜特科技",
+    "3450.TW":"聯鈞光電",
     "4979.TW":"華星光通","4979.TWO":"華星光通",
     "6451.TW":"訊芯-KY",
     "3363.TW":"眾達-KY", "3363.TWO":"眾達-KY",
     "3163.TW":"波若威",  "3163.TWO":"波若威",
-    "4908.TW":"前鼎",    "4908.TWO":"前鼎",
-    "3081.TW":"聯亞",    "3081.TWO":"聯亞",
-    "3406.TW":"玉晶光",
-    "3587.TW":"閎康",    "3587.TWO":"閎康",
+    "4908.TW":"前鼎光電",    "4908.TWO":"前鼎光電",
+    "3081.TW":"聯亞光電",    "3081.TWO":"聯亞光電",
+    "3406.TW":"玉晶光電",
+    "3587.TW":"閎康科技",    "3587.TWO":"閎康科技",
     "6683.TW":"雍智科技","6683.TWO":"雍智科技",
     "3037.TW":"欣興",
     "3189.TW":"景碩",
     "8046.TW":"南電",
-    "6223.TW":"旺矽",    "6223.TWO":"旺矽",
-    "6515.TW":"穎崴",    "6515.TWO":"穎崴",
+    "6223.TW":"旺矽科技",    "6223.TWO":"旺矽科技",
+    "6515.TW":"穎崴科技",    "6515.TWO":"穎崴科技",
     "1609.TW":"大亞",
     "1503.TW":"士林電機",
     "1519.TW":"華城",
@@ -1565,15 +1565,15 @@ TW_NAME_MAP = {
     "6806.TW":"森崴能源",
     "1618.TW":"合機",
     "3006.TW":"晶豪科",
-    "8299.TW":"群聯",    "8299.TWO":"群聯",
-    "6510.TW":"精測",    "6510.TWO":"精測",
+    "8299.TW":"群聯電子",    "8299.TWO":"群聯電子",
+    "6510.TW":"精測電子",    "6510.TWO":"精測電子",
     "6271.TW":"同欣電",
     "3026.TW":"禾伸堂",
     "2375.TW":"智寶",
-    "6127.TW":"洋華",    "6127.TWO":"洋華",
+    "6127.TW":"洋華光電",    "6127.TWO":"洋華光電",
     "3068.TW":"訊雲",    "3068.TWO":"訊雲",
     "3338.TW":"泰碩",
-    "6173.TW":"信昌電",  "6173.TWO":"信昌電",
+    "6173.TW":"信昌電陶",  "6173.TWO":"信昌電陶",
 }
 
 def get_stock_name(ticker: str) -> str:
@@ -1834,6 +1834,12 @@ TW_ELECTRONIC_759 = [
 
 # 全域即時名稱快取(從screener結果補充TW_NAME_MAP沒有的英文名)
 _REALTIME_NAME_CACHE: dict[str, str] = {}
+
+# ★ 雷達掃描預設自選股清單（可在 Sidebar 自訂）
+DEFAULT_WATCHLIST = [
+    '8074.TW', '8150.TW', '2317.TW', '1609.TW',
+    '3289.TW', '2603.TW', '2330.TW', '2454.TW',
+]
 
 # 動態名稱快取(從 Ticker.info 動態查詢的結果，session 期間有效)
 _DYNAMIC_NAME_CACHE: dict[str, str] = {}
@@ -3380,6 +3386,67 @@ def _render_wl_scan_table(results: list):
     st.markdown(cards_html, unsafe_allow_html=True)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  🚀 雷達掃描引擎
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_radar_scan(tickers: list[str], period: str = "2y") -> list[dict]:
+    """
+    多執行緒雷達掃描：對每支股票執行完整的 DNA + 買點評估。
+    只回傳「五大黃金條件全部成立」的標的。
+    ThreadPoolExecutor 並發，最多 6 執行緒，每支都有 try-except 保護。
+    """
+    import time as _time
+
+    def _scan_one_radar(ticker: str) -> dict | None:
+        try:
+            df, used = fetch_data(ticker, period=period,
+                                  time_bucket=_get_cache_bucket())
+            if df is None or len(df) < 60:
+                return None
+            # 即時補丁
+            df, _ = _patch_today_price(df, used)
+            df    = add_indicators(df)
+            dna   = detect_wave_dna(df)
+            wr    = compute_winrate(dna, df)
+            entry = evaluate_entry_point(dna, wr, df)
+            conds = entry["conditions"]
+
+            # 前瞻矩陣取 D+1 D+2 下限
+            rows  = generate_forward_matrix(df, wr, dna, n_days=3)
+            d1    = rows[0]["下限參考"] if len(rows) > 0 else None
+            d2    = rows[1]["下限參考"] if len(rows) > 1 else None
+
+            return {
+                "代號":      used,
+                "股名":      get_stock_name(used),
+                "現價":      round(float(df["Close"].iloc[-1]), 2),
+                "R_cycle":   round(dna["R_cycle"], 3),
+                "勝率":      round(wr["winrate"] * 100, 1),
+                "買點分數":  entry["score"],
+                "買點訊號":  entry["signal"],
+                "D1下限":    d1,
+                "D2下限":    d2,
+                "conds":     conds,
+                "all_green": all(conds.values()),
+                "K9":        wr["k9"],
+                "D9":        wr["d9"],
+                "量比":      wr["vol_ratio"],
+                "category":  wr["category"],
+            }
+        except Exception:
+            return None
+
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(_scan_one_radar, t): t for t in tickers}
+        for fut in futures:
+            r = fut.result()
+            if r is not None:
+                results.append(r)
+    return results
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("""
@@ -3397,6 +3464,37 @@ def render_sidebar():
             ["🔍 單股分析", "⭐ 自選股", "📡 批量掃描"],
             horizontal=True,
         )
+
+        st.markdown("---")
+
+        # ── 🚀 雷達掃描控制區 ──────────────────────────────────────────────
+        with st.expander("🚀 雷達掃描（快速戰情）", expanded=False):
+            st.markdown(
+                '<div style="font-size:12px;color:#4a6fa5;margin-bottom:8px;">'
+                '輸入要掃描的股票代號（逗號或換行分隔），留空使用預設清單</div>',
+                unsafe_allow_html=True
+            )
+            radar_input = st.text_area(
+                "自選股清單", height=90,
+                value="\n".join(DEFAULT_WATCHLIST),
+                placeholder="8150\n2330\n2454",
+                label_visibility="collapsed",
+                key="radar_input_text"
+            )
+            radar_scan = st.button(
+                "🚀 啟動全市場自選股大掃描",
+                use_container_width=True,
+                type="primary",
+                key="radar_scan_btn"
+            )
+            if radar_scan:
+                # 解析代號清單
+                raw_list = radar_input.replace(",", "\n").split("\n")
+                radar_tickers = [t.strip().upper() for t in raw_list if t.strip()]
+                if not radar_tickers:
+                    radar_tickers = list(DEFAULT_WATCHLIST)
+                st.session_state["_radar_tickers"] = radar_tickers
+                st.session_state["_radar_trigger"] = True
 
         st.markdown("---")
 
@@ -3706,6 +3804,144 @@ def main():
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    #  🚀 雷達掃描戰情表（優先顯示在最頂部）
+    # ════════════════════════════════════════════════════════════════════
+    if st.session_state.get("_radar_trigger"):
+        st.session_state["_radar_trigger"] = False  # 重置觸發旗標
+        radar_tickers = st.session_state.get("_radar_tickers", DEFAULT_WATCHLIST)
+
+        st.markdown("""
+        <div class="section-title">🚀 雷達掃描戰情表 — 黃金起漲偵測</div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="font-size:13px;color:#4a6fa5;background:#eaf2fb;
+                    border-left:4px solid #1565c0;padding:10px 16px;
+                    border-radius:6px;margin-bottom:14px;">
+          ⚡ 正在掃描 <b>{len(radar_tickers)}</b> 支標的，
+          篩選「五大黃金條件全部成立」的個股…
+        </div>
+        """, unsafe_allow_html=True)
+
+        prog = st.progress(0.0, text="🔬 掃描中...")
+        with st.spinner(""):
+            radar_results = run_radar_scan(radar_tickers, period=period)
+        prog.progress(1.0, text="✅ 掃描完成")
+        import time as _t; _t.sleep(0.4)
+        prog.empty()
+
+        # 篩選五大條件全綠的個股
+        golden = [r for r in radar_results if r.get("all_green")]
+        golden.sort(key=lambda x: x["買點分數"], reverse=True)
+
+        bar_color = {"top":"#0a7c59","mid":"#d97706","warn":"#c0392b"}
+
+        if not golden:
+            st.info(
+                "⏳ 當前自選股均處於波動或過熱階段，"
+                "尚未觸發週期生理鐘扣滿訊號，請保持耐心。"
+            )
+        else:
+            st.markdown(
+                f'<div class="section-title">🎯 黃金買點標的 ({len(golden)} 檔) '
+                f'— 五大條件全部成立</div>',
+                unsafe_allow_html=True
+            )
+
+        # 無論有無黃金標的，顯示所有掃描結果（依買點分數排序）
+        all_sorted = sorted(radar_results, key=lambda x: x["買點分數"], reverse=True)
+
+        rows_html = ""
+        for i, r in enumerate(all_sorted, 1):
+            code  = r["代號"]
+            name  = r["股名"]
+            url   = get_chart_url(code)
+            score = r["買點分數"]
+            sig   = r["買點訊號"]
+            rc    = r["R_cycle"]
+            wr_v  = r["勝率"]
+            d1    = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+            d2    = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+            cat   = r["category"]
+            bc    = bar_color.get(cat, "#1565c0")
+            is_g  = r.get("all_green")
+
+            sc_color = ("#c0392b" if "共振" in sig else "#0a7c59" if score >= 80
+                        else "#1565c0" if score >= 65 else "#d97706" if score >= 50
+                        else "#9e9e9e")
+            rc_color = "#0a7c59" if rc >= 1.0 else "#d97706" if rc >= 0.6 else "#c0392b"
+            row_bg   = "#fff8e1" if is_g else ("#f7fafd" if i % 2 == 0 else "#fff")
+            golden_mark = "🎯 " if is_g else ""
+
+            # cond 圖示
+            c = r.get("conds", {})
+            ci = lambda v: "✅" if v else "❌"
+            cond_str = (f"{ci(c.get('c3_rcycle'))}R "
+                        f"{ci(c.get('c4_kd'))}KD "
+                        f"{ci(c.get('c1_mid'))}蓄 "
+                        f"{ci(c.get('c2_wr'))}勝 "
+                        f"{ci(c.get('c5_vol'))}量")
+
+            rows_html += f"""
+            <tr style="background:{row_bg};">
+              <td style="text-align:center;font-size:12px;color:#7a9bbf;">{i}</td>
+              <td>
+                <a href="{url}" target="_blank"
+                   style="color:#1565c0;font-weight:700;font-size:13px;
+                          font-family:'IBM Plex Mono',monospace;text-decoration:none;">
+                  {golden_mark}{code}</a>
+              </td>
+              <td style="font-size:12px;color:#1a2b3c;">{name}</td>
+              <td style="font-family:'IBM Plex Mono',monospace;font-weight:700;
+                         font-size:14px;color:#1a2b3c;">{r['現價']}</td>
+              <td style="color:{rc_color};font-weight:700;font-size:13px;
+                         font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:5px;">
+                  <div style="width:40px;background:#c8d8e8;border-radius:3px;
+                              height:7px;overflow:hidden;">
+                    <div style="width:{min(wr_v,100):.0f}%;height:7px;background:{bc};"></div>
+                  </div>
+                  <span style="color:{bc};font-weight:700;font-size:12px;">{wr_v:.0f}%</span>
+                </div>
+              </td>
+              <td style="font-size:11px;letter-spacing:1px;">{cond_str}</td>
+              <td style="font-weight:700;color:{sc_color};font-size:13px;
+                         white-space:nowrap;">{score}分 {sig[:4]}</td>
+              <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                         color:#1565c0;font-weight:700;text-align:center;">{d1}</td>
+              <td style="font-family:'IBM Plex Mono',monospace;font-size:13px;
+                         color:#d97706;font-weight:700;text-align:center;">{d2}</td>
+            </tr>"""
+
+        st.markdown(f"""
+        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:850px;">
+          <thead>
+            <tr style="background:#1565c0;color:#fff;font-size:11px;">
+              <th style="padding:8px 5px;width:28px;">#</th>
+              <th style="padding:8px;text-align:left;min-width:90px;">代號</th>
+              <th style="padding:8px;text-align:left;min-width:65px;">股名</th>
+              <th style="padding:8px;text-align:left;min-width:75px;">現價</th>
+              <th style="padding:8px;text-align:left;min-width:70px;">R_cycle</th>
+              <th style="padding:8px;text-align:left;min-width:90px;">勝率</th>
+              <th style="padding:8px;text-align:left;min-width:120px;">五大條件</th>
+              <th style="padding:8px;text-align:left;min-width:95px;">買點評估</th>
+              <th style="padding:8px;text-align:center;min-width:65px;">D+1下限</th>
+              <th style="padding:8px;text-align:center;min-width:65px;">D+2下限</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+        </div>
+        <div style="font-size:11px;color:#7a9bbf;margin-top:8px;text-align:right;">
+          🎯 黃底 = 五大黃金條件全部成立
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
 
     # ════════════════════════════════════════════════════════════════════
     #  模式 ⭐: 自選股看板
