@@ -14,7 +14,7 @@
     pandas>=2.0
     numpy>=1.24
     scipy>=1.11
-    FinMind>=0.6       ← 台股三大法人籌碼數據(免費/免註冊)
+    streamlit-autorefresh>=1.0.1  ← 盤中自動刷新
 ================================================================================
 """
 
@@ -39,12 +39,10 @@ try:
 except ImportError:
     _EQUITY_QUERY_AVAILABLE = False
 
-# FinMind — 台股三大法人籌碼數據 (完全免費/免註冊)
-try:
-    from FinMind.data import DataLoader as _FinMindDataLoader
-    _FINMIND_AVAILABLE = True
-except ImportError:
-    _FINMIND_AVAILABLE = False
+# FinMind — 台股三大法人籌碼數據
+# ★ 不安裝 finmind 套件，改用免費 REST API（避免 Streamlit Cloud 依賴衝突）
+# API: https://api.finmindtrade.com/api/v4/data
+_FINMIND_AVAILABLE = True  # 只要能連網就可用（不依賴套件）
 
 # ── ★ Discord Webhook 自動推播 ─────────────────────────────────────────────
 import requests as _requests
@@ -4716,8 +4714,7 @@ def main():
         err_msg = chip_raw.get('error', '未知錯誤')
         st.warning(
             f"⚠️ 籌碼資料暫時無法取得（{err_msg}），買點評估改以純技術面判斷。\n\n"
-            f"**排查提示：** 請確認 `requirements.txt` 中有 `finmind>=2.0.0`（小寫），"
-            f"並在 Streamlit Cloud 重新部署讓套件重新安裝。"
+            f"FinMind 使用免費 REST API，無需安裝套件。如持續失敗請確認網路連線正常。"
         )
 
     render_forward_table(rows, wr["close"])
