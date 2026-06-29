@@ -40,10 +40,61 @@ except ImportError:
     _EQUITY_QUERY_AVAILABLE = False
 
 # FinMind — 台股三大法人籌碼數據 (完全免費/免註冊)
-# ★ 改用 FinMind 免費 REST API（不安裝套件，避免依賴衝突）
-# API: https://api.finmindtrade.com/api/v4/data  免費/免註冊
-# requests 是 Streamlit 內建依賴，無需額外安裝
-_FINMIND_AVAILABLE = True   # 只要能連網就可用
+try:
+    from FinMind.data import DataLoader as _FinMindDataLoader
+    _FINMIND_AVAILABLE = True
+except ImportError:
+    _FINMIND_AVAILABLE = False
+
+# ── ★ Discord Webhook 自動推播 ─────────────────────────────────────────────
+import requests as _requests
+
+DISCORD_WEBHOOK_URL = (
+    "https://discordapp.com/api/webhooks/"
+    "1521147314834505848/"
+    "aWbjve4_c0qQBHTFL-oTLWvD-UEOdmnb_4-Ix6hh94A_rdW5eBmf2jTrR51UVMBzhUiS"
+)
+
+def send_discord_notify(message: str) -> bool:
+    """
+    推播訊息到 Discord Webhook。
+    回傳 True=成功，False=失敗（不拋出例外）。
+    """
+    try:
+        resp = _requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": message},
+            timeout=5
+        )
+        return resp.status_code in (200, 204)
+    except Exception as e:
+        print(f"Discord 發送失敗: {e}")
+        return False
+
+# ── ★ 台灣盤中時段判定 ────────────────────────────────────────────────────
+def is_tw_trading_hours() -> bool:
+    """
+    判斷當前是否為台股交易時段。
+    週一至週五 09:00 ~ 13:35（台灣時間 Asia/Taipei）。
+    """
+    try:
+        import pytz as _pytz
+        tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+        if tw.weekday() >= 5:               # 週末
+            return False
+        t = tw.time()
+        return datetime.time(9, 0) <= t <= datetime.time(13, 35)
+    except Exception:
+        return False
+
+# ── ★ streamlit_autorefresh（盤中每 20 分鐘自動刷新）────────────────────
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    _AUTOREFRESH_AVAILABLE = False
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  全域設定
@@ -1856,6 +1907,7 @@ _DYNAMIC_NAME_CACHE: dict[str, str] = {}
 # 比靜態 TW_NAME_MAP 更準確，永遠與官方保持同步
 _OFFICIAL_NAME_CACHE: dict[str, str] = {}
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _load_official_names() -> dict[str, str]:
     """
     從台灣證交所(TWSE)與櫃買中心(TPEX) OpenAPI 載入完整股票中文名稱。
@@ -1865,9 +1917,6 @@ def _load_official_names() -> dict[str, str]:
       - TWSE: https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL
       - TPEX: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes
     """
-    global _OFFICIAL_NAME_CACHE
-    if _OFFICIAL_NAME_CACHE:
-        return _OFFICIAL_NAME_CACHE   # 已載入，直接回傳
 
     try:
         import requests as _req
@@ -1903,7 +1952,6 @@ def _load_official_names() -> dict[str, str]:
         except Exception:
             pass
 
-        _OFFICIAL_NAME_CACHE = result
     except Exception:
         pass
 
@@ -3452,6 +3500,54 @@ def _render_wl_scan_table(results: list):
 
 
 
+def _auto_radar_scan_and_notify(period: str = "2y"):
+    """
+    ★ 盤中自動雷達掃描 + Discord 推播
+    ─────────────────────────────────────────────────────────────────────
+    每次 main() 執行（autorefresh 或手動刷新）都呼叫此函式。
+
+    流程：
+      1. 掃描 DEFAULT_WATCHLIST 裡的股票
+      2. 找出「五大黃金條件全部成立」的標的
+      3. 若新發現（本次 session 尚未推播過），立即推播 Discord
+      4. 用 session_state 記錄已推播代號，避免同一 session 重複推播
+
+    推播條件：all(conds.values()) == True（五大黃金條件全綠）
+    推播頻率：同一標的在同一 session 只推播一次（避免 20 分鐘重刷時洗版）
+    """
+    # 初始化已推播記錄
+    if "_notified_tickers" not in st.session_state:
+        st.session_state["_notified_tickers"] = set()
+    notified = st.session_state["_notified_tickers"]
+
+    results = run_radar_scan(DEFAULT_WATCHLIST, period=period)
+    golden  = [r for r in results if r.get("all_green")]
+
+    for r in golden:
+        code = r["代號"]
+        if code in notified:
+            continue   # 本 session 已推播過，跳過
+
+        # 組裝 Discord 訊息
+        d1 = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+        d2 = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+        import pytz as _pytz
+        now_tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+        msg = (
+            f"🚨 **【波浪 DNA 雷達·起漲點觸發】** {now_tw.strftime('%H:%M')}\n"
+            f"📈 標的：**{r['股名']}** (`{code}`)\n"
+            f"💰 當前現價：**{r['現價']}** 元 ｜ 🎯 預測勝率：**{r['勝率']:.0f}%**\n"
+            f"🧬 歷史對稱率 R_cycle：**{r['R_cycle']:.3f}**\n"
+            f"📌 建議掛單 (D+1 下限)：**{d1}** 元\n"
+            f"🛡️ 停損基準 (D+2 下限)：**{d2}** 元\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        success = send_discord_notify(msg)
+        if success:
+            notified.add(code)
+            st.session_state["_notified_tickers"] = notified
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  🚀 雷達掃描引擎
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3869,8 +3965,22 @@ def render_forward_table(rows: list[dict], last_close: float):
 
 def main():
     # ── 啟動時預載官方股票名稱資料庫（TWSE + TPEX OpenAPI）────────────
-    # 背景靜默載入，失敗不影響主程式，載入後 get_stock_name 自動使用
-    _load_official_names()
+    # @st.cache_data(ttl=3600) 確保每小時最多打一次 API
+    if not st.session_state.get('_official_names_loaded'):
+        _load_official_names()
+        st.session_state['_official_names_loaded'] = True
+
+    # ── ★ 盤中自動刷新（每 20 分鐘）──────────────────────────────────
+    # streamlit_autorefresh 讓 Streamlit Cloud 定時重跑 main()
+    # 只在台股交易時段啟動，節省雲端資源
+    if _AUTOREFRESH_AVAILABLE and is_tw_trading_hours():
+        st_autorefresh(interval=20 * 60 * 1000, key="auto_radar_refresh")
+
+    # ── ★ 盤中自動雷達掃描 + Discord 推播 ────────────────────────────
+    # 每次 autorefresh 或頁面載入都執行一次
+    # 使用 session_state 記錄「上次推播時間」避免重複推播
+    if is_tw_trading_hours():
+        _auto_radar_scan_and_notify(period="2y")
     (ticker_raw, period, top_n, analyze,
      scan, custom_raw, min_wr, use_hot100, mode,
      scan_universe, scan_mode, min_entry_score) = render_sidebar()
