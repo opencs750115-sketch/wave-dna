@@ -1094,17 +1094,47 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _cache_chip_result(cache_key: str, result: dict):
+def _cache_chip_result(cache_key: str, result: dict, ttl_minutes: int | None = None):
     """
     將籌碼查詢結果（成功或失敗）寫入 session_state 快取。
-    失敗結果也快取的原因：100 檔規模掃描時，興櫃股/剛上市股這類
-    注定查無 FinMind 資料的標的，若不快取失敗結果，每 20 分鐘
-    autorefresh 都會重新發送必定失敗的請求，白白浪費 API 額度。
+
+    ★ ttl_minutes 區分兩種快取策略：
+      - None（預設，整天有效）：用於成功結果，或代號格式錯誤、興櫃股
+        查無資料等「永久性」失敗 — 同一天內不需要重試。
+      - 指定分鐘數（如 5）：用於 402 額度限制等「暫時性」失敗 —
+        額度通常幾分鐘內就會恢復，過了 ttl 後下次查詢會自動重試，
+        不會被整天鎖住查不到籌碼。
     """
     try:
-        st.session_state[cache_key] = result
+        result_with_meta = dict(result)
+        if ttl_minutes is not None:
+            result_with_meta["_cached_at"]    = datetime.datetime.now().timestamp()
+            result_with_meta["_ttl_minutes"]  = ttl_minutes
+        st.session_state[cache_key] = result_with_meta
     except Exception:
         pass
+
+
+def _get_cached_chip_result(cache_key: str) -> dict | None:
+    """
+    讀取籌碼快取，並檢查短時快取（ttl_minutes）是否已過期。
+    過期則回傳 None（視同快取未命中），讓呼叫端重新打 API。
+    """
+    try:
+        cached = st.session_state.get(cache_key)
+        if cached is None:
+            return None
+
+        ttl = cached.get("_ttl_minutes")
+        if ttl is not None:
+            cached_at = cached.get("_cached_at", 0)
+            elapsed_min = (datetime.datetime.now().timestamp() - cached_at) / 60
+            if elapsed_min >= ttl:
+                return None   # 短時快取已過期，視同未命中，觸發重新查詢
+
+        return cached
+    except Exception:
+        return None
 
 
 def _fetch_chip_data(ticker: str) -> dict:
@@ -1138,15 +1168,12 @@ def _fetch_chip_data(ticker: str) -> dict:
         it_buy_days=0, available=False, error=""
     )
 
-    # ── 手動快取（session_state，當天有效，成功/失敗皆快取）────────────
+    # ── 手動快取（session_state，成功/興櫃股失敗整天有效，402額度限制5分鐘）──
     today_key = datetime.date.today().strftime('%Y%m%d')
     cache_key = f"_chip_{ticker}_{today_key}"
-    try:
-        cached = st.session_state.get(cache_key)
-        if cached is not None:
-            return cached   # 命中快取（無論成功或失敗）直接回傳，不重打 API
-    except Exception:
-        pass
+    cached = _get_cached_chip_result(cache_key)
+    if cached is not None:
+        return cached   # 命中有效快取，直接回傳，不重打 API
 
     try:
         import requests as _req
@@ -1171,12 +1198,21 @@ def _fetch_chip_data(ticker: str) -> dict:
         )
 
         payload = resp.json()
-        if payload.get('status') != 200 or not payload.get('data'):
-            empty["error"] = f"FinMind API status={payload.get('status')}"
-            # ★ 失敗結果也快取，避免 100 檔規模下對查無資料的股票
-            #   （興櫃股/剛上市股）在每 20 分鐘 autorefresh 時重複發送
-            #   注定失敗的請求，浪費 FinMind 額度
-            _cache_chip_result(cache_key, empty)
+        api_status = payload.get('status')
+
+        if api_status != 200 or not payload.get('data'):
+            empty["error"] = f"FinMind API status={api_status}"
+
+            if api_status == 402:
+                # ★ 402 = 免費額度暫時用盡（高頻請求觸發），這是「暫時性」問題
+                #   不應該整天鎖住，改用短時間快取（5分鐘），讓額度恢復後
+                #   下次掃描自動重試，不會因為一次撞額度就整天查不到籌碼
+                _cache_chip_result(cache_key, empty, ttl_minutes=5)
+            else:
+                # 其他失敗（代號不存在/興櫃股無資料等）視為「永久性」問題，
+                # 整天快取，避免對注定查無資料的股票重複浪費請求
+                _cache_chip_result(cache_key, empty)
+
             return empty
 
         raw = pd.DataFrame(payload['data'])
@@ -5103,10 +5139,17 @@ def main():
         """, unsafe_allow_html=True)
     else:
         err_msg = chip_raw.get('error', '未知錯誤')
-        st.warning(
-            f"⚠️ 籌碼資料暫時無法取得（{err_msg}），買點評估改以純技術面判斷。\n\n"
-            f"FinMind 使用免費 REST API，無需安裝套件。如持續失敗請確認網路連線正常。"
-        )
+        if '402' in err_msg:
+            st.warning(
+                f"⚠️ FinMind 免費額度暫時用盡（status=402），買點評估改以純技術面判斷。\n\n"
+                f"這是暫時性限制，通常數分鐘內會恢復，5 分鐘後重新查詢會自動重試，"
+                f"不需要手動處理。若持續發生，可能是短時間內掃描檔數過多。"
+            )
+        else:
+            st.warning(
+                f"⚠️ 籌碼資料暫時無法取得（{err_msg}），買點評估改以純技術面判斷。\n\n"
+                f"FinMind 使用免費 REST API，無需安裝套件。如持續失敗請確認網路連線正常。"
+            )
 
     render_forward_table(rows, wr["close"])
 
