@@ -1094,6 +1094,19 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _cache_chip_result(cache_key: str, result: dict):
+    """
+    將籌碼查詢結果（成功或失敗）寫入 session_state 快取。
+    失敗結果也快取的原因：100 檔規模掃描時，興櫃股/剛上市股這類
+    注定查無 FinMind 資料的標的，若不快取失敗結果，每 20 分鐘
+    autorefresh 都會重新發送必定失敗的請求，白白浪費 API 額度。
+    """
+    try:
+        st.session_state[cache_key] = result
+    except Exception:
+        pass
+
+
 def _fetch_chip_data(ticker: str) -> dict:
     """
     抓取台股三大法人近 20 天籌碼資料。
@@ -1104,6 +1117,11 @@ def _fetch_chip_data(ticker: str) -> dict:
 
     ★ v2 新增: fi_net_daily / it_net_daily — 近10天每日明細 dict
       供彈窗顯示「近10天三大法人買賣超」用。
+
+    ★ v3 強化（100檔規模防鎖機制）: 成功與失敗結果都快取在
+      st.session_state，key = f"_chip_{ticker}_{今日日期}"。
+      每檔股票一天最多打 1 次 FinMind API，無論成功或失敗，
+      確保每 20 分鐘自動刷新 × 100 檔規模也不會扣爆免費額度。
 
     回傳 dict:
       fi_net_5d, it_net_5d  : 近5日每日淨買超(張)
@@ -1120,13 +1138,13 @@ def _fetch_chip_data(ticker: str) -> dict:
         it_buy_days=0, available=False, error=""
     )
 
-    # ── 手動快取（session_state，當天有效）────────────────────────────
+    # ── 手動快取（session_state，當天有效，成功/失敗皆快取）────────────
     today_key = datetime.date.today().strftime('%Y%m%d')
     cache_key = f"_chip_{ticker}_{today_key}"
     try:
         cached = st.session_state.get(cache_key)
-        if cached is not None and cached.get('available'):
-            return cached
+        if cached is not None:
+            return cached   # 命中快取（無論成功或失敗）直接回傳，不重打 API
     except Exception:
         pass
 
@@ -1136,6 +1154,7 @@ def _fetch_chip_data(ticker: str) -> dict:
         stock_id = re.sub(r'\.(TW|TWO)$', '', ticker.upper()).strip()
         if not stock_id.isdigit():
             empty["error"] = f"不支援的代號格式: {ticker}"
+            _cache_chip_result(cache_key, empty)
             return empty
 
         start = (datetime.date.today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
@@ -1154,6 +1173,10 @@ def _fetch_chip_data(ticker: str) -> dict:
         payload = resp.json()
         if payload.get('status') != 200 or not payload.get('data'):
             empty["error"] = f"FinMind API status={payload.get('status')}"
+            # ★ 失敗結果也快取，避免 100 檔規模下對查無資料的股票
+            #   （興櫃股/剛上市股）在每 20 分鐘 autorefresh 時重複發送
+            #   注定失敗的請求，浪費 FinMind 額度
+            _cache_chip_result(cache_key, empty)
             return empty
 
         raw = pd.DataFrame(payload['data'])
@@ -1186,15 +1209,12 @@ def _fetch_chip_data(ticker: str) -> dict:
             "error":        "",
         }
 
-        try:
-            st.session_state[cache_key] = result
-        except Exception:
-            pass
-
+        _cache_chip_result(cache_key, result)
         return result
 
     except Exception as e:
         empty["error"] = f"{type(e).__name__}: {str(e)[:100]}"
+        _cache_chip_result(cache_key, empty)
         return empty
 
 
@@ -1909,24 +1929,49 @@ _DYNAMIC_NAME_CACHE: dict[str, str] = {}
 
 def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
     """
-    取得「全市場成交量前 N 大熱門股」+「核心保障底盤」的合併掃描池。
+    取得「全市場成交量前 N 大」+「漲跌幅前 N 大」+「核心保障底盤」的
+    合併掃描池，初選池總數約 100 檔（含核心底盤 5 檔）。
     ─────────────────────────────────────────────────────────────────────
-    流程：
-      1. 呼叫 fetch_tw_realtime_hot('volume', top_n) 取得上市+上櫃成交量排行
-      2. 與 CORE_RADAR_WATCHLIST 合併、去重複
-      3. 若即時排行抓取失敗（Yahoo 限流/網路問題），優雅降級為只回傳
-         CORE_RADAR_WATCHLIST，絕不讓整個雷達系統因此掛掉
+    撈取三個來源：
+      (a) fetch_tw_realtime_hot('volume', top_n) — 成交量排行前 N 名（量大熱門）
+      (b) fetch_tw_realtime_hot('gain',   top_n) — 漲幅排行前 N 名（波動焦點）
+      (c) fetch_tw_realtime_hot('loss',   top_n) — 跌幅排行前 N 名（波動焦點）
+          (b)+(c) 合計即「漲跌幅最劇烈」的標的，若已在(a)中則自動去重複
 
-    回傳：去重複後的代號清單（約 50~55 檔）
+    與 CORE_RADAR_WATCHLIST 合併、去重複，核心股優先排在最前面確保必掃。
+
+    ★ 容錯設計：三個來源各自獨立 try-except，任一來源抓取失敗
+      （Yahoo 限流/逾時）都不影響其他來源，最差情況優雅降級為
+      只回傳 CORE_RADAR_WATCHLIST，絕不讓整個雷達系統因此掛掉。
+
+    回傳：去重複後的代號清單（核心底盤5檔 + 約95檔來自三個排行，
+          因排行間可能重疊，實際總數通常落在 80~100 檔之間）
     """
     pool: list[str] = []
 
+    # (a) 成交量排行（量大熱門股）
     try:
         tickers, _meta, ok, _msg = fetch_tw_realtime_hot('volume', top_n)
         if ok and tickers:
             pool.extend(tickers)
     except Exception:
-        pass   # 即時排行失敗不影響核心底盤
+        pass
+
+    # (b) 漲幅排行（波動焦點股·上）
+    try:
+        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('gain', top_n)
+        if ok and tickers:
+            pool.extend(tickers)
+    except Exception:
+        pass
+
+    # (c) 跌幅排行（波動焦點股·下，含超跌反彈題材）
+    try:
+        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('loss', top_n)
+        if ok and tickers:
+            pool.extend(tickers)
+    except Exception:
+        pass
 
     # 合併核心底盤並去重複（保留順序，核心股優先排在前面確保一定被掃到）
     merged = list(CORE_RADAR_WATCHLIST)
@@ -3587,7 +3632,7 @@ def _send_radar_status_report(scanned_count: int, golden_count: int, stage: str)
         f"🤖 **【波浪 DNA 雲端雷達 · 運行日誌】**\n"
         f"📅 觀測日期：{now_tw.strftime('%Y-%m-%d')}\n"
         f"⏰ 狀態時間：{now_tw.strftime('%H:%M:%S')}（{stage}）\n"
-        f"📊 掃描進度：本輪已全數掃描全市場 {scanned_count} 檔量大熱門股。\n"
+        f"📊 掃描進度：本輪已全數掃描全市場 {scanned_count} 檔量大與漲跌幅焦點股。\n"
         f"🎯 本輪大藍燈達標：{golden_count} 檔。"
     )
     send_discord_notify(msg)
