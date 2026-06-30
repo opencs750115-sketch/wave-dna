@@ -3838,9 +3838,12 @@ def render_sidebar():
             # ── 掃描來源 ──────────────────────────────────────────────
             radar_source = st.radio(
                 "掃描來源",
-                ["📋 自訂清單", "📊 即時成交量排行 100", "📈 即時漲幅排行 100", "📉 即時跌幅排行 100"],
+                ["📋 自訂清單", "🌐 全市場海選100（成交量+漲跌幅）",
+                 "📊 即時成交量排行 100", "📈 即時漲幅排行 100", "📉 即時跌幅排行 100"],
                 index=0,
-                key="radar_source_radio"
+                key="radar_source_radio",
+                help="全市場海選＝成交量前50＋漲幅前50＋跌幅前50合併去重複，"
+                     "與 Discord 自動推播使用同一份掃描池"
             )
 
             # ── 自訂清單（只在選擇自訂時顯示）────────────────────────
@@ -3882,8 +3885,27 @@ def render_sidebar():
 
             st.divider()
 
+            # ── 自動雷達開關 ──────────────────────────────────────────
+            st.markdown(
+                '<div style="font-size:12px;color:#4a6fa5;">⏱️ 開頁自動雷達（每20分鐘）</div>',
+                unsafe_allow_html=True
+            )
+            auto_radar_toggle = st.toggle(
+                "啟用自動掃描+推播",
+                value=st.session_state.get('_auto_radar_enabled', True),
+                key="auto_radar_toggle_widget",
+                help="開啟後，只要此分頁保持開啟、且在台股交易時段(09:00~13:35)，"
+                     "每 20 分鐘會自動掃描全市場並推播 Discord。"
+                     "關閉分頁或標籤頁睡眠時不會運作，需重新打開網頁才會繼續。"
+            )
+            st.session_state['_auto_radar_enabled'] = auto_radar_toggle
+            if not auto_radar_toggle:
+                st.caption("🔴 已關閉，手動掃描按鈕仍可正常使用")
+
+            st.divider()
+
             # ── Discord 推播控制 ───────────────────────────────────────
-            st.markdown('<div style="font-size:12px;color:#4a6fa5;">📡 Discord 推播</div>',
+            st.markdown('<div style="font-size:12px;color:#4a6fa5;">📡 Discord 手動推播</div>',
                         unsafe_allow_html=True)
             col_t, col_s = st.columns(2)
             with col_t:
@@ -4191,10 +4213,15 @@ def main():
         _load_official_names()
         st.session_state['_official_names_loaded'] = True
 
-    # ── ★ 盤中自動刷新（每 20 分鐘）──────────────────────────────────
-    # streamlit_autorefresh 讓 Streamlit Cloud 定時重跑 main()
-    # 只在台股交易時段啟動，節省雲端資源
-    if _AUTOREFRESH_AVAILABLE and is_tw_trading_hours():
+    # ── ★ 盤中自動刷新（每 20 分鐘）── 與手動掃描完全並存，互不影響 ──
+    # streamlit_autorefresh 在「網頁開著」的前提下，於瀏覽器端倒數計時，
+    # 時間到了自動觸發 Streamlit 重新執行 main() 一次。
+    # 手動操作（切換 Sidebar、按按鈕）也會觸發 main() 重新執行，
+    # 兩者共用同一套 is_tw_trading_hours() 判斷與 _auto_radar_scan_and_notify()，
+    # 不會互相干擾、也不會重複推播（靠每日 session_state key 防重複）。
+    _auto_radar_on = st.session_state.get('_auto_radar_enabled', True)
+
+    if _AUTOREFRESH_AVAILABLE and is_tw_trading_hours() and _auto_radar_on:
         st_autorefresh(interval=20 * 60 * 1000, key="auto_radar_refresh")
 
     # ── ★ 盤中自動雷達掃描 + Discord 推播（移到 sidebar 之後執行）────
@@ -4215,8 +4242,37 @@ def main():
             if k.startswith('_notified_') and k != _notify_key:
                 del st.session_state[k]
 
-    # 盤中自動掃描（每次 autorefresh 觸發）
-    if is_tw_trading_hours():
+    # ── ★ 自動雷達運作狀態指示器（讓使用者清楚知道目前模式）─────────
+    _in_market = is_tw_trading_hours()
+    if _auto_radar_on and _in_market:
+        st.markdown("""
+        <div style="background:#e8f4ec;border-left:4px solid #0a7c59;
+                    padding:8px 14px;border-radius:6px;margin-bottom:10px;
+                    font-size:12px;color:#0a7c59;display:flex;align-items:center;gap:8px;">
+          🟢 <b>自動雷達運作中</b>　每 20 分鐘自動掃描全市場並推播 Discord
+          （此分頁必須保持開啟才會持續運作）
+        </div>
+        """, unsafe_allow_html=True)
+    elif _auto_radar_on and not _in_market:
+        st.markdown("""
+        <div style="background:#f0f3f7;border-left:4px solid #7a9bbf;
+                    padding:8px 14px;border-radius:6px;margin-bottom:10px;
+                    font-size:12px;color:#4a6fa5;">
+          ⚪ 目前非台股交易時段（09:00~13:35），自動雷達待命中，
+          可隨時用 Sidebar「📡 強制掃描推播」手動觸發
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background:#fde8e8;border-left:4px solid #c0392b;
+                    padding:8px 14px;border-radius:6px;margin-bottom:10px;
+                    font-size:12px;color:#c0392b;">
+          🔴 自動雷達已關閉（Sidebar 可重新開啟），手動掃描功能仍正常可用
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 盤中自動掃描（每次 autorefresh 或任何手動操作觸發的 rerun 都會執行）
+    if _in_market and _auto_radar_on:
         _auto_radar_scan_and_notify(period=period)
 
     # 手動測試推播按鈕（由 sidebar 傳入觸發）
@@ -4314,7 +4370,15 @@ def main():
             "📉 即時跌幅排行 100":  "loss",
         }
 
-        if radar_source in rank_map:
+        if radar_source == "🌐 全市場海選100（成交量+漲跌幅）":
+            # ★ 與 Discord 自動推播使用同一份合併池：
+            #   成交量前50 + 漲幅前50 + 跌幅前50 + 核心底盤，去重複
+            with st.spinner("⏳ 正在合併全市場成交量＋漲跌幅前50大熱門股池..."):
+                radar_tickers = get_taiwan_hot_tickers(top_n=50)
+            realtime_meta = []
+            source_label  = f"🌐 全市場海選 ({len(radar_tickers)} 檔)"
+
+        elif radar_source in rank_map:
             with st.spinner(f"⏳ 正在抓取 Yahoo Finance {radar_source}..."):
                 radar_tickers, realtime_meta, ok, msg = fetch_tw_realtime_hot(
                     rank_map[radar_source], 100
@@ -4373,8 +4437,8 @@ def main():
                   </tr></thead><tbody>{prev_rows}</tbody>
                 </table>""", unsafe_allow_html=True)
 
-        prog = st.progress(0.0, text="🔬 DNA 掃描中...")
-        radar_results = run_radar_scan(radar_tickers, period=period)
+        prog = st.progress(0.0, text="🔬 DNA × 籌碼 雙重掃描中...")
+        radar_results = run_radar_scan(radar_tickers, period=period, with_chip=True)
         prog.progress(1.0, text="✅ 掃描完成")
         import time as _t; _t.sleep(0.3)
         prog.empty()
@@ -4382,7 +4446,7 @@ def main():
         # ── 勝率篩選 ──────────────────────────────────────────────────
         filtered = [r for r in radar_results if r["勝率"] >= radar_min_wr]
         golden   = [r for r in filtered if r.get("all_green")]
-        golden.sort(key=lambda x: x["買點分數"], reverse=True)
+        golden.sort(key=_radar_sort_key)   # ★ 與 Discord 推播相同排序：勝率優先,R_cycle近1.15優先
         all_sorted = sorted(filtered, key=lambda x: x["買點分數"], reverse=True)
 
         # ── 統計摘要 ──────────────────────────────────────────────────
@@ -4484,6 +4548,36 @@ def main():
               🎯 黃底 = 五大黃金條件全部成立
             </div>
             """, unsafe_allow_html=True)
+
+            # ── 手動推播本次戰情表的黃金標的到 Discord ─────────────────
+            if golden:
+                top3_preview = golden[:3]
+                preview_str = "、".join(f"{r['代號']}({r['勝率']:.0f}%)" for r in top3_preview)
+                st.markdown(
+                    f'<div style="font-size:12px;color:#4a6fa5;margin-top:6px;">'
+                    f'💡 本次掃描共 {len(golden)} 檔黃金標的，'
+                    f'Top {len(top3_preview)}: {preview_str}</div>',
+                    unsafe_allow_html=True
+                )
+                if st.button("📡 推播本次 Top 3 到 Discord", key="radar_table_push_btn"):
+                    for r in top3_preview:
+                        d1 = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+                        d2 = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+                        chip_note = f"\n🧬 籌碼動向：{r['chip_label']}" if r.get("chip_label") else ""
+                        import pytz as _pytz2
+                        now_tw2 = datetime.datetime.now(_pytz2.timezone('Asia/Taipei'))
+                        msg = (
+                            f"🚨 **【波浪 DNA 雷達·手動精選】** {now_tw2.strftime('%H:%M')}\n"
+                            f"📈 標的：**{r['股名']}** (`{r['代號']}`)\n"
+                            f"💰 當前現價：**{r['現價']}** 元 ｜ 🎯 預測勝率：**{r['勝率']:.0f}%**\n"
+                            f"🧬 歷史對稱率 R_cycle：**{r['R_cycle']:.3f}**\n"
+                            f"📌 建議掛單 (D+1 下限)：**{d1}** 元\n"
+                            f"🛡️ 停損基準 (D+2 下限)：**{d2}** 元"
+                            f"{chip_note}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        send_discord_notify(msg)
+                    st.toast(f"✅ 已推播 {len(top3_preview)} 檔到 Discord！", icon="📡")
 
         st.markdown("---")
 
