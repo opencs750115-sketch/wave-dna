@@ -1892,68 +1892,129 @@ TW_ELECTRONIC_759 = [
 # 全域即時名稱快取(從screener結果補充TW_NAME_MAP沒有的英文名)
 _REALTIME_NAME_CACHE: dict[str, str] = {}
 
-# ★ 雷達掃描預設自選股清單（可在 Sidebar 自訂）
+# ★ 雷達掃描預設自選股清單（可在 Sidebar 自訂，⭐自選股模式用）
 DEFAULT_WATCHLIST = [
     '8074.TW', '8150.TW', '2317.TW', '1609.TW',
     '3289.TW', '2603.TW', '2330.TW', '2454.TW',
 ]
 
+# ★ 全市場雷達永久保障底盤：無論成交量排行如何變動，這些代號永遠被掃描
+CORE_RADAR_WATCHLIST = [
+    '1609.TW', '3289.TW', '8074.TW', '8150.TW', '2317.TW',
+]
+
 # 動態名稱快取(從 Ticker.info 動態查詢的結果，session 期間有效)
 _DYNAMIC_NAME_CACHE: dict[str, str] = {}
+
+
+def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
+    """
+    取得「全市場成交量前 N 大熱門股」+「核心保障底盤」的合併掃描池。
+    ─────────────────────────────────────────────────────────────────────
+    流程：
+      1. 呼叫 fetch_tw_realtime_hot('volume', top_n) 取得上市+上櫃成交量排行
+      2. 與 CORE_RADAR_WATCHLIST 合併、去重複
+      3. 若即時排行抓取失敗（Yahoo 限流/網路問題），優雅降級為只回傳
+         CORE_RADAR_WATCHLIST，絕不讓整個雷達系統因此掛掉
+
+    回傳：去重複後的代號清單（約 50~55 檔）
+    """
+    pool: list[str] = []
+
+    try:
+        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('volume', top_n)
+        if ok and tickers:
+            pool.extend(tickers)
+    except Exception:
+        pass   # 即時排行失敗不影響核心底盤
+
+    # 合併核心底盤並去重複（保留順序，核心股優先排在前面確保一定被掃到）
+    merged = list(CORE_RADAR_WATCHLIST)
+    seen   = set(merged)
+    for t in pool:
+        if t not in seen:
+            merged.append(t)
+            seen.add(t)
+
+    return merged
 
 # ★ 官方名稱資料庫（從台灣證交所+櫃買中心 OpenAPI 動態載入）
 # 比靜態 TW_NAME_MAP 更準確，永遠與官方保持同步
 _OFFICIAL_NAME_CACHE: dict[str, str] = {}
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def _load_official_names() -> dict[str, str]:
     """
     從台灣證交所(TWSE)與櫃買中心(TPEX) OpenAPI 載入完整股票中文名稱。
-    每次 App 啟動時呼叫一次，結果快取在 _OFFICIAL_NAME_CACHE。
 
-    資料來源（完全免費、官方、無需 API key）：
-      - TWSE: https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL
-      - TPEX: https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes
+    ★ 改用 @st.cache_resource（全域共享，App 啟動後只打一次）：
+      @st.cache_data 是 per-session，每個新使用者第一次進入都要重打 API，
+      API 回傳前快取是空的，導致 get_stock_name 顯示英文名。
+      @st.cache_resource 全域共享，所有 session 都直接用同一份快取。
+
+    三個 API 互補，最大化覆蓋率：
+      ① TWSE t187ap03_L       — 上市公司基本資料（含停牌/低流動性股）
+      ② TWSE STOCK_DAY_ALL    — 上市今日成交（名稱最新，覆蓋①）
+      ③ TPEX mainboard_quotes — 上櫃今日成交
+
+    回傳: {ticker_with_suffix: 中文名稱}，如 {"2330.TW": "台積電"}
     """
+    import requests as _req
+    result: dict[str, str] = {}
 
+    # ① TWSE 上市公司基本資料（含停牌股）
     try:
-        import requests as _req
-        result = {}
-
-        # 上市股 (TWSE)
-        try:
-            r = _req.get(
-                "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=8
-            )
-            for item in r.json():
-                code = item.get('Code', '').strip()
-                name = item.get('Name', '').strip()
-                if code and name and code.isdigit():
-                    result[f"{code}.TW"] = name
-        except Exception:
-            pass
-
-        # 上櫃股 (TPEX)
-        try:
-            r2 = _req.get(
-                "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=8
-            )
-            for item in r2.json():
-                code = item.get('SecuritiesCompanyCode', '').strip()
-                name = item.get('CompanyName', '').strip()
-                if code and name and code.isdigit():
-                    result[f"{code}.TWO"] = name
-        except Exception:
-            pass
-
+        r = _req.get(
+            "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=8
+        )
+        for item in r.json():
+            code = item.get('公司代號', '').strip()
+            name = (item.get('公司簡稱', '').strip()
+                    or item.get('公司名稱', '').strip())
+            if code and name and code.isdigit():
+                result[f"{code}.TW"] = name
     except Exception:
         pass
 
-    return _OFFICIAL_NAME_CACHE
+    # ② TWSE 今日成交（名稱最新，覆蓋①）
+    try:
+        r = _req.get(
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=8
+        )
+        for item in r.json():
+            code = item.get('Code', '').strip()
+            name = item.get('Name', '').strip()
+            if code and name and code.isdigit():
+                result[f"{code}.TW"] = name
+    except Exception:
+        pass
+
+    # ③ TPEX 上櫃今日成交
+    try:
+        r = _req.get(
+            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=8
+        )
+        for item in r.json():
+            code = item.get('SecuritiesCompanyCode', '').strip()
+            name = item.get('CompanyName', '').strip()
+            if code and name and code.isdigit():
+                result[f"{code}.TWO"] = name
+    except Exception:
+        pass
+
+    # ④ 手動補入：官方 API 查不到的特殊狀態股票
+    _manual = {
+        "6696.TWO": "科生*-KY",
+        "6618.TWO": "宇泰科技",
+    }
+    for k, v in _manual.items():
+        if k not in result:
+            result[k] = v
+
+    return result
 
 
 def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
@@ -3498,112 +3559,212 @@ def _render_wl_scan_table(results: list):
 
 
 
+def _radar_sort_key(r: dict) -> tuple:
+    """
+    ★ 最優質加強排序鍵：
+      1. 勝率（Win Rate）由高到低 — 主排序
+      2. R_cycle 越接近 1.0~1.3 甜蜜區間越優先 — 次排序
+         （距離甜蜜區中心 1.15 的絕對值越小，排序權重越高）
+    """
+    winrate = r.get("勝率", 0)
+    rc      = r.get("R_cycle", 0)
+    # R_cycle 在 1.0~1.3 區間內距離 1.15 的差距（越小越好）
+    if 1.0 <= rc <= 1.3:
+        rc_dist = abs(rc - 1.15)
+    else:
+        rc_dist = abs(rc - 1.15) + 1.0   # 區間外的標的明確排在區間內標的之後
+    return (-winrate, rc_dist)   # 負號讓勝率由高到低排序
+
+
+def _send_radar_status_report(scanned_count: int, golden_count: int, stage: str):
+    """
+    ★ Discord 雷達運作狀態回報（開盤首輪 / 收盤末輪）
+    用來確認雲端雷達系統仍正常運作中，未死機。
+    """
+    import pytz as _pytz
+    now_tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+    msg = (
+        f"🤖 **【波浪 DNA 雲端雷達 · 運行日誌】**\n"
+        f"📅 觀測日期：{now_tw.strftime('%Y-%m-%d')}\n"
+        f"⏰ 狀態時間：{now_tw.strftime('%H:%M:%S')}（{stage}）\n"
+        f"📊 掃描進度：本輪已全數掃描全市場 {scanned_count} 檔量大熱門股。\n"
+        f"🎯 本輪大藍燈達標：{golden_count} 檔。"
+    )
+    send_discord_notify(msg)
+
+
 def _auto_radar_scan_and_notify(period: str = "2y"):
     """
-    ★ 盤中自動雷達掃描 + Discord 推播
+    ★ 全市場雷達自動掃描 + Discord 精選推播
     ─────────────────────────────────────────────────────────────────────
-    每次 main() 執行（autorefresh 或手動刷新）都呼叫此函式。
-
     流程：
-      1. 掃描 DEFAULT_WATCHLIST 裡的股票
-      2. 找出「五大黃金條件全部成立」的標的
-      3. 若新發現（本次 session 尚未推播過），立即推播 Discord
-      4. 用 session_state 記錄已推播代號，避免同一 session 重複推播
+      1. get_taiwan_hot_tickers() 取得全市場成交量前 50 大 + 核心底盤
+         （約 50~55 檔，CORE_RADAR_WATCHLIST 永遠包含在內）
+      2. run_radar_scan() 多執行緒併發掃描（max_workers=8）
+      3. 篩出 all_green（五大條件全綠 + 籌碼未一票否決）的標的
+      4. 依 _radar_sort_key 排序：勝率高→低，R_cycle 越近 1.0~1.3 越優先
+      5. 只取 Top 3 推播 Discord，沒有達標則完全不發送（防洗版）
+      6. 開盤首輪（09:00~09:05）與收盤末輪（13:25~13:35）額外發送
+         「雷達運作狀態回報」，確認系統存活
 
-    推播條件：all(conds.values()) == True（五大黃金條件全綠）
-    推播頻率：同一標的在同一 session 只推播一次（避免 20 分鐘重刷時洗版）
+    推播記錄：用「_notified_{今日日期}」key，每天自動重置，
+              確保每支股票每天最多推播一次。
     """
-    # 初始化已推播記錄
-    if "_notified_tickers" not in st.session_state:
-        st.session_state["_notified_tickers"] = set()
-    notified = st.session_state["_notified_tickers"]
+    import pytz as _pytz
+    now_tw      = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+    _today_str  = now_tw.strftime('%Y%m%d')
+    _notify_key = f"_notified_{_today_str}"
 
-    results = run_radar_scan(DEFAULT_WATCHLIST, period=period)
+    if _notify_key not in st.session_state:
+        st.session_state[_notify_key] = set()
+    notified = st.session_state[_notify_key]
+
+    # ── ① 組裝全市場掃描池（全市場前50大 + 核心底盤，自動去重複）──
+    try:
+        scan_pool = get_taiwan_hot_tickers(top_n=50)
+    except Exception:
+        scan_pool = list(CORE_RADAR_WATCHLIST)   # 全市場抓取失敗，退守核心底盤
+
+    # ── ② 多執行緒掃描全市場池 ─────────────────────────────────────
+    results = run_radar_scan(scan_pool, period=period, with_chip=True)
     golden  = [r for r in results if r.get("all_green")]
 
-    for r in golden:
-        code = r["代號"]
-        if code in notified:
-            continue   # 本 session 已推播過，跳過
+    # ── ③ 最優質排序：勝率高→低，R_cycle 越近 1.0~1.3 越優先 ───────
+    golden.sort(key=_radar_sort_key)
 
-        # 組裝 Discord 訊息
-        d1 = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
-        d2 = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
-        import pytz as _pytz
-        now_tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+    # ── ④ 只取 Top 3 推播，避免洗版；尚未推播過的才送 ───────────────
+    top3 = [r for r in golden if r["代號"] not in notified][:3]
+
+    for r in top3:
+        code = r["代號"]
+        d1   = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+        d2   = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+        chip_note = f"\n🧬 籌碼動向：{r['chip_label']}" if r.get("chip_label") else ""
         msg = (
             f"🚨 **【波浪 DNA 雷達·起漲點觸發】** {now_tw.strftime('%H:%M')}\n"
             f"📈 標的：**{r['股名']}** (`{code}`)\n"
             f"💰 當前現價：**{r['現價']}** 元 ｜ 🎯 預測勝率：**{r['勝率']:.0f}%**\n"
             f"🧬 歷史對稱率 R_cycle：**{r['R_cycle']:.3f}**\n"
             f"📌 建議掛單 (D+1 下限)：**{d1}** 元\n"
-            f"🛡️ 停損基準 (D+2 下限)：**{d2}** 元\n"
+            f"🛡️ 停損基準 (D+2 下限)：**{d2}** 元"
+            f"{chip_note}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         success = send_discord_notify(msg)
         if success:
             notified.add(code)
-            st.session_state["_notified_tickers"] = notified
+            st.session_state[_notify_key] = notified
+
+    # ── ⑤ 開盤首輪 / 收盤末輪：發送雷達存活狀態回報 ────────────────
+    _status_key_open  = f"_status_open_{_today_str}"
+    _status_key_close = f"_status_close_{_today_str}"
+    t = now_tw.time()
+
+    if (datetime.time(9, 0) <= t <= datetime.time(9, 5)
+            and not st.session_state.get(_status_key_open)):
+        _send_radar_status_report(len(results), len(golden), "開盤首輪")
+        st.session_state[_status_key_open] = True
+
+    if (datetime.time(13, 25) <= t <= datetime.time(13, 35)
+            and not st.session_state.get(_status_key_close)):
+        _send_radar_status_report(len(results), len(golden), "收盤末輪")
+        st.session_state[_status_key_close] = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  🚀 雷達掃描引擎
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_radar_scan(tickers: list[str], period: str = "2y") -> list[dict]:
+def run_radar_scan(tickers: list[str], period: str = "2y",
+                   with_chip: bool = True) -> list[dict]:
     """
-    多執行緒雷達掃描：對每支股票執行完整的 DNA + 買點評估。
-    只回傳「五大黃金條件全部成立」的標的。
-    ThreadPoolExecutor 並發，最多 6 執行緒，每支都有 try-except 保護。
-    """
-    import time as _time
+    多執行緒雷達掃描：對每支股票執行完整的 DNA + 買點 + 籌碼評估。
 
+    ─────────────────────────────────────────────────────────────────────
+    ★ all_green 判定（大藍燈基本關卡）：
+      五大技術條件全部成立 AND 籌碼面未被一票否決（veto=False）。
+      若 with_chip=False（全市場海選池太大時可關閉籌碼以加速），
+      則只看五大技術條件。
+
+    ★ max_workers=8：
+      在 5~10 之間取中間值。過高會被 Yahoo Finance 限流(429)，
+      過低掃描 50+ 檔會太慢。每支股票完整跑一次 fetch_data + FinMind
+      籌碼查詢，實測 8 條併發是穩定與速度的平衡點。
+
+    ★ try-except 保護：
+      任何一檔股票的 fetch_data、FinMind、或計算過程失敗，
+      _scan_one_radar 都會 return None，不會讓整個 ThreadPoolExecutor
+      崩潰，futures.result() 逐一收集即可繼續處理下一檔。
+
+    回傳：list[dict]，每筆含 all_green / 買點分數 / 籌碼資訊等完整欄位
+    """
     def _scan_one_radar(ticker: str) -> dict | None:
         try:
             df, used = fetch_data(ticker, period=period,
                                   time_bucket=_get_cache_bucket())
             if df is None or len(df) < 60:
                 return None
-            # 即時補丁
+
             df, _ = _patch_today_price(df, used)
             df    = add_indicators(df)
             dna   = detect_wave_dna(df)
             wr    = compute_winrate(dna, df)
-            entry = evaluate_entry_point(dna, wr, df)
+
+            # ── 籌碼評估（可選，全市場海選時可關閉以加速）──────────
+            chip_eval = None
+            chip_raw  = None
+            if with_chip:
+                try:
+                    chip_raw  = _fetch_chip_data(used)
+                    chip_eval = evaluate_chip(chip_raw)
+                except Exception:
+                    chip_eval = None   # 籌碼失敗不影響技術面評估
+
+            entry = evaluate_entry_point(dna, wr, df, chip=chip_eval)
             conds = entry["conditions"]
 
+            # 五大技術條件全綠 AND 籌碼未被一票否決 → 真正的大藍燈
+            tech_all_green = all(conds.values())
+            chip_veto      = bool(chip_eval and chip_eval.get("veto"))
+            all_green      = tech_all_green and not chip_veto
+
             # 前瞻矩陣取 D+1 D+2 下限
-            rows  = generate_forward_matrix(df, wr, dna, n_days=3)
-            d1    = rows[0]["下限參考"] if len(rows) > 0 else None
-            d2    = rows[1]["下限參考"] if len(rows) > 1 else None
+            rows = generate_forward_matrix(df, wr, dna, n_days=3)
+            d1   = rows[0]["下限參考"] if len(rows) > 0 else None
+            d2   = rows[1]["下限參考"] if len(rows) > 1 else None
 
             return {
-                "代號":      used,
-                "股名":      get_stock_name(used),
-                "現價":      round(float(df["Close"].iloc[-1]), 2),
-                "R_cycle":   round(dna["R_cycle"], 3),
-                "勝率":      round(wr["winrate"] * 100, 1),
-                "買點分數":  entry["score"],
-                "買點訊號":  entry["signal"],
-                "D1下限":    d1,
-                "D2下限":    d2,
-                "conds":     conds,
-                "all_green": all(conds.values()),
-                "K9":        wr["k9"],
-                "D9":        wr["d9"],
-                "量比":      wr["vol_ratio"],
-                "category":  wr["category"],
+                "代號":       used,
+                "股名":       get_stock_name(used),
+                "現價":       round(float(df["Close"].iloc[-1]), 2),
+                "R_cycle":    round(dna["R_cycle"], 3),
+                "勝率":       round(wr["winrate"] * 100, 1),
+                "買點分數":   entry["score"],
+                "買點訊號":   entry["signal"],
+                "D1下限":     d1,
+                "D2下限":     d2,
+                "conds":      conds,
+                "all_green":  all_green,
+                "chip_veto":  chip_veto,
+                "chip_label": chip_eval.get("label", "") if chip_eval else "",
+                "K9":         wr["k9"],
+                "D9":         wr["d9"],
+                "量比":       wr["vol_ratio"],
+                "category":   wr["category"],
             }
         except Exception:
-            return None
+            return None   # ★ 單檔失敗優雅跳過，不影響其他股票掃描
 
     results = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {ex.submit(_scan_one_radar, t): t for t in tickers}
         for fut in futures:
-            r = fut.result()
-            if r is not None:
-                results.append(r)
+            try:
+                r = fut.result()
+                if r is not None:
+                    results.append(r)
+            except Exception:
+                continue   # ★ 個別 future 拋例外也不中斷整體掃描
     return results
 
 def render_sidebar():
@@ -3673,6 +3834,23 @@ def render_sidebar():
                 st.session_state["_radar_input"]   = radar_input
                 st.session_state["_radar_min_wr"]  = radar_min_wr
                 st.session_state["_radar_trigger"]  = True
+
+            st.divider()
+
+            # ── Discord 推播控制 ───────────────────────────────────────
+            st.markdown('<div style="font-size:12px;color:#4a6fa5;">📡 Discord 推播</div>',
+                        unsafe_allow_html=True)
+            col_t, col_s = st.columns(2)
+            with col_t:
+                if st.button("🧪 測試推播", key="discord_test_btn",
+                             use_container_width=True,
+                             help="發送測試訊息到 Discord 確認連線"):
+                    st.session_state["_discord_test_trigger"] = True
+            with col_s:
+                if st.button("📡 強制掃描推播", key="discord_force_btn",
+                             use_container_width=True,
+                             help="立即掃描全市場熱門股池（約50~55檔）並精選Top3推播"):
+                    st.session_state["_discord_force_scan"] = True
 
         st.markdown("---")
 
@@ -3974,16 +4152,90 @@ def main():
     if _AUTOREFRESH_AVAILABLE and is_tw_trading_hours():
         st_autorefresh(interval=20 * 60 * 1000, key="auto_radar_refresh")
 
-    # ── ★ 盤中自動雷達掃描 + Discord 推播 ────────────────────────────
-    # 每次 autorefresh 或頁面載入都執行一次
-    # 使用 session_state 記錄「上次推播時間」避免重複推播
-    if is_tw_trading_hours():
-        _auto_radar_scan_and_notify(period="2y")
+    # ── ★ 盤中自動雷達掃描 + Discord 推播（移到 sidebar 之後執行）────
+    # 此區塊在 render_sidebar() 之後呼叫，確保 period 等參數已取得
     (ticker_raw, period, top_n, analyze,
      scan, custom_raw, min_wr, use_hot100, mode,
      scan_universe, scan_mode, min_entry_score) = render_sidebar()
 
-    # 頁面標題
+    # ── ★ Discord 推播控制 ────────────────────────────────────────────
+    # 每日重置推播記錄（用日期作 key，跨 session 也能每天重新推播）
+    import pytz as _pytz
+    _today_str = datetime.datetime.now(_pytz.timezone('Asia/Taipei')).strftime('%Y%m%d')
+    _notify_key = f"_notified_{_today_str}"
+    if _notify_key not in st.session_state:
+        st.session_state[_notify_key] = set()   # 今日推播記錄
+        # 清掉昨天的 key，節省 session_state 空間
+        for k in list(st.session_state.keys()):
+            if k.startswith('_notified_') and k != _notify_key:
+                del st.session_state[k]
+
+    # 盤中自動掃描（每次 autorefresh 觸發）
+    if is_tw_trading_hours():
+        _auto_radar_scan_and_notify(period=period)
+
+    # 手動測試推播按鈕（由 sidebar 傳入觸發）
+    if st.session_state.pop("_discord_test_trigger", False):
+        ok = send_discord_notify(
+            f"🧪 **【Wave DNA 推播測試】** "
+            f"{datetime.datetime.now(_pytz.timezone('Asia/Taipei')).strftime('%H:%M')}\n"
+            f"✅ Discord Webhook 連線正常，盤中黃金訊號將自動推播到此頻道。"
+        )
+        if ok:
+            st.toast("✅ 測試推播已發送！請確認 Discord", icon="📡")
+        else:
+            st.toast("❌ Discord 推播失敗，請確認 Webhook URL", icon="⚠️")
+
+    # 手動強制掃描推播按鈕（由 sidebar 傳入觸發）
+    if st.session_state.pop("_discord_force_scan", False):
+        with st.spinner("🔬 強制掃描全市場熱門池中（約50~55檔）..."):
+            try:
+                force_pool = get_taiwan_hot_tickers(top_n=50)
+            except Exception:
+                force_pool = list(CORE_RADAR_WATCHLIST)
+            results = run_radar_scan(force_pool, period=period, with_chip=True)
+
+        golden = [r for r in results if r.get("all_green")]
+        golden.sort(key=_radar_sort_key)
+        top3 = golden[:3]   # ★ 只取最優質 Top 3，防洗版
+
+        if top3:
+            for r in top3:
+                d1  = f"{r['D1下限']:.2f}" if r.get("D1下限") else "--"
+                d2  = f"{r['D2下限']:.2f}" if r.get("D2下限") else "--"
+                chip_note = f"\n🧬 籌碼動向：{r['chip_label']}" if r.get("chip_label") else ""
+                now_tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+                msg = (
+                    f"🚨 **【波浪 DNA 雷達·起漲點觸發】** {now_tw.strftime('%H:%M')}\n"
+                    f"📈 標的：**{r['股名']}** (`{r['代號']}`)\n"
+                    f"💰 當前現價：**{r['現價']}** 元 ｜ 🎯 預測勝率：**{r['勝率']:.0f}%**\n"
+                    f"🧬 歷史對稱率 R_cycle：**{r['R_cycle']:.3f}**\n"
+                    f"📌 建議掛單 (D+1 下限)：**{d1}** 元\n"
+                    f"🛡️ 停損基準 (D+2 下限)：**{d2}** 元"
+                    f"{chip_note}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                send_discord_notify(msg)
+            st.toast(f"✅ 已從 {len(results)} 檔中精選 Top {len(top3)} 推播！", icon="🎯")
+        else:
+            # 黃金條件全綠找不到時，推播最高分標的作為觀察通知
+            if results:
+                best = max(results, key=lambda x: x["買點分數"])
+                now_tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+                msg = (
+                    f"📊 **【Wave DNA 觀察標的】** {now_tw.strftime('%H:%M')}\n"
+                    f"⚠️ 本次掃描 {len(results)} 檔全市場熱門股，無五大條件全綠標的，"
+                    f"最高分標的如下：\n"
+                    f"📈 {best['股名']} (`{best['代號']}`) "
+                    f"買點 {best['買點分數']} 分 / 勝率 {best['勝率']:.0f}% / "
+                    f"R_cycle {best['R_cycle']:.3f}"
+                )
+                send_discord_notify(msg)
+                st.toast(f"ℹ️ 掃描{len(results)}檔，無黃金標的，已推播最高分 {best['代號']}", icon="📊")
+            else:
+                st.toast("⚠️ 掃描失敗，請確認網路連線", icon="⚠️")
+
+
     st.markdown("""
     <div style="margin-bottom:22px;">
       <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;
