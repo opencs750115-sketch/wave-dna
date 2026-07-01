@@ -492,27 +492,45 @@ def _patch_today_price(df: pd.DataFrame, ticker_str: str) -> tuple[pd.DataFrame,
         if not (datetime.time(9, 2) <= t <= datetime.time(15, 30)):
             return df, False
 
-        # ── 每次 rerun 直接打 fast_info，取最新現價 ───────────────────
-        fast       = yf.Ticker(ticker_str).fast_info
-        live_close = getattr(fast, 'last_price', None)
-        if live_close is None or float(live_close) <= 0:
-            return df, False
-        live_close  = float(live_close)
-        live_volume = int(getattr(fast, 'last_volume', 0) or 0)
+        # ── fast_info 加 30 秒 session_state 快取 ──────────────────────
+        # 每次 rerun 都打 fast_info 約 0.3~0.8 秒
+        # 改為：30 秒 slot 內同一代號只打一次，slot 結束自動更新
+        import time as _ti
+        _slot   = int(_ti.time() // 30)           # 每 30 秒換一個 slot
+        _fi_key = f"_fi_{ticker_str}_{_slot}"
+        _fi     = None
+        try: _fi = st.session_state.get(_fi_key)
+        except Exception: pass
 
-        prev_close = float(getattr(fast, 'regular_market_previous_close',
-                                   live_close) or live_close)
-        try:
-            live_open = float(getattr(fast, 'open', None) or live_close)
-            raw_high  = float(getattr(fast, 'day_high', None) or 0)
-            raw_low   = float(getattr(fast, 'day_low',  None) or 0)
-            live_high = raw_high if raw_high > prev_close * 0.5 else max(live_open, live_close)
-            live_low  = raw_low  if raw_low  > prev_close * 0.5 else min(live_open, live_close)
-        except (ValueError, TypeError):
-            live_open = live_high = live_low = live_close
-
-        live_high = max(live_high, live_open, live_close)
-        live_low  = min(live_low,  live_open, live_close)
+        if _fi:
+            live_close  = _fi[0]; live_volume = _fi[1]
+            prev_close  = _fi[2]; live_open   = _fi[3]
+            live_high   = _fi[4]; live_low    = _fi[5]
+        else:
+            fast       = yf.Ticker(ticker_str).fast_info
+            live_close = getattr(fast, 'last_price', None)
+            if live_close is None or float(live_close) <= 0:
+                return df, False
+            live_close  = float(live_close)
+            live_volume = int(getattr(fast, 'last_volume', 0) or 0)
+            prev_close  = float(getattr(fast, 'regular_market_previous_close',
+                                       live_close) or live_close)
+            try:
+                live_open = float(getattr(fast, 'open', None) or live_close)
+                raw_high  = float(getattr(fast, 'day_high', None) or 0)
+                raw_low   = float(getattr(fast, 'day_low',  None) or 0)
+                live_high = raw_high if raw_high > prev_close * 0.5 else max(live_open, live_close)
+                live_low  = raw_low  if raw_low  > prev_close * 0.5 else min(live_open, live_close)
+            except (ValueError, TypeError):
+                live_open = live_high = live_low = live_close
+            live_high = max(live_high, live_open, live_close)
+            live_low  = min(live_low,  live_open, live_close)
+            try:
+                st.session_state[_fi_key] = [
+                    live_close, live_volume, prev_close,
+                    live_open,  live_high,   live_low,
+                ]
+            except Exception: pass
 
         today_ts  = pd.to_datetime(today_str)
         last_date = pd.to_datetime(df.index[-1]).strftime('%Y-%m-%d')
@@ -1963,6 +1981,7 @@ CORE_RADAR_WATCHLIST = [
 _DYNAMIC_NAME_CACHE: dict[str, str] = {}
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
     """
     取得「全市場成交量前 N 大」+「漲跌幅前 N 大」+「核心保障底盤」的
@@ -4257,8 +4276,13 @@ def main():
     # 不會互相干擾、也不會重複推播（靠每日 session_state key 防重複）。
     _auto_radar_on = st.session_state.get('_auto_radar_enabled', True)
 
+    _autorefresh_count = 0
     if _AUTOREFRESH_AVAILABLE and is_tw_trading_hours() and _auto_radar_on:
-        st_autorefresh(interval=20 * 60 * 1000, key="auto_radar_refresh")
+        # st_autorefresh 回傳「已刷新次數」，每 20 分鐘遞增 1
+        # 用此值判斷是否為 autorefresh 觸發，而非手動操作觸發的 rerun
+        _autorefresh_count = st_autorefresh(
+            interval=20 * 60 * 1000, key="auto_radar_refresh"
+        ) or 0
 
     # ── ★ 盤中自動雷達掃描 + Discord 推播（移到 sidebar 之後執行）────
     # 此區塊在 render_sidebar() 之後呼叫，確保 period 等參數已取得
@@ -4307,8 +4331,12 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # 盤中自動掃描（每次 autorefresh 或任何手動操作觸發的 rerun 都會執行）
-    if _in_market and _auto_radar_on:
+    # ★ 盤中自動掃描：只在 autorefresh 計數器遞增時執行
+    # 手動切換 Sidebar/頁面觸發的 rerun，_autorefresh_count 不變 → 跳過掃描
+    # 這是「轉圈圈/切換卡頓」的最根本修正
+    _last_radar_count = st.session_state.get('_last_radar_count', -1)
+    if _in_market and _auto_radar_on and _autorefresh_count != _last_radar_count:
+        st.session_state['_last_radar_count'] = _autorefresh_count
         _auto_radar_scan_and_notify(period=period)
 
     # 手動測試推播按鈕（由 sidebar 傳入觸發）
