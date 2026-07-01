@@ -1655,7 +1655,7 @@ TW_NAME_MAP = {
     "2399.TW":"映泰","3576.TW":"聯合再生","5230.TWO":"友鴻","2605.TW":"新興",
     "2472.TW":"立隆","2483.TW":"百容","2449.TW":"京元電子","2406.TW":"國碩",
     # ── 上櫃熱門補充 ──────────────────────────────────────────────────
-    "5328.TWO":"聯發","3105.TWO":"穩懋","8043.TWO":"瞬曜","6207.TWO":"雷科",
+    "5328.TWO":"聯發","3105.TWO":"穩懋","8043.TWO":"蜜望實","6207.TWO":"雷科",
     "6175.TWO":"立積","5351.TWO":"鈺創","6147.TWO":"頎邦","3236.TWO":"千如",
     "1815.TWO":"富喬","3707.TWO":"漢磊","8088.TWO":"品安","5347.TWO":"世界",
     "1785.TWO":"光洋科","5425.TWO":"台半","8064.TWO":"歐特邁","6548.TWO":"長華電材",
@@ -1697,6 +1697,11 @@ TW_NAME_MAP = {
     "3068.TW":"訊雲",    "3068.TWO":"訊雲",
     "3338.TW":"泰碩",
     "6173.TW":"信昌電",  "6173.TWO":"信昌電",
+    "8935.TWO":"邦泰",
+    "3490.TWO":"單井",
+    "3491.TWO":"昇達科",
+    "6174.TWO":"安碁",
+    "8176.TWO":"智捷",
 }
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1754,16 +1759,26 @@ def get_stock_name(ticker: str) -> str:
     if name:
         return name
 
-    # 3. 即時排行快取
+    # 3. 即時排行快取（screener shortName，通常英文，需清理）
     cached = _REALTIME_NAME_CACHE.get(ticker, "")
     if cached:
         for s in [" CO., LTD.", " Co., Ltd.", " CO LTD", " CORPORATION",
                   " Corporation", " Corp.", " CORP", " INC.", " Inc.", " INC",
-                  " LTD.", " Ltd.", " CO.", " International", " INTERNATIONAL"]:
+                  " LTD.", " Ltd.", " CO.", " International", " INTERNATIONAL",
+                  " TECHNOLOGY", " Technology", " ENTERPRISE", " Enterprise",
+                  " INDUSTRIAL", " Industrial", " POLYBLEND", " Polyblend",
+                  ", Inc.", ", Ltd.", ", Ltd", "."]:
             cached = cached.replace(s, "").replace(s.upper(), "")
-        return cached.strip() or ticker
+        cached = cached.strip()
+        # ★ 強化過濾：有中文直接接受；純大寫英文（非中文）一律跳過，
+        # 改走後續查詢取中文名（PONTEX/AKER/SINGLE WELL 等全數攔截）
+        # 只有混合大小寫英文（如 Z-Com）或中文才接受
+        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', cached))
+        is_all_caps = bool(cached) and cached.replace('-','').replace(' ','').replace('.','').isupper()
+        if cached and (has_chinese or not is_all_caps):
+            return cached
 
-    # 4. 動態快取
+# 4. 動態快取
     dyn = _DYNAMIC_NAME_CACHE.get(ticker, "")
     if dyn:
         return dyn
@@ -2119,7 +2134,7 @@ def _load_official_names() -> dict[str, str]:
     except Exception:
         pass
 
-    # ③ TPEX 上櫃今日成交
+    # ③ TPEX 上櫃今日成交（mainboard_quotes ~1011筆，僅今日有成交）
     try:
         r = _req.get(
             "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
@@ -2130,6 +2145,23 @@ def _load_official_names() -> dict[str, str]:
             name = item.get('CompanyName', '').strip()
             if code and name and code.isdigit():
                 result[f"{code}.TWO"] = name
+    except Exception:
+        pass
+
+    # ④ TPEX 上櫃完整歷史收盤（daily_close_quotes ~9500筆，含低流動性/停牌股）
+    # 覆蓋③沒抓到的股票（邦泰8935、單井3490、蜜望實8043、安碁6174、智捷8176等）
+    try:
+        r = _req.get(
+            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+        )
+        for item in r.json():
+            code = item.get('SecuritiesCompanyCode', '').strip()
+            name = item.get('CompanyName', '').strip()
+            if code and name and code.isdigit():
+                # 不覆蓋③已取得的名稱（③的今日成交名稱更新）
+                if f"{code}.TWO" not in result:
+                    result[f"{code}.TWO"] = name
     except Exception:
         pass
 
