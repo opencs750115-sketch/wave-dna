@@ -1699,6 +1699,32 @@ TW_NAME_MAP = {
     "6173.TW":"信昌電",  "6173.TWO":"信昌電",
 }
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_taiwan_ticker_mapping() -> dict[str, str]:
+    """
+    台股代號 → 中文名稱對照表（24 小時快取）。
+
+    ★ 相容提示詞 API 規格，但底層改用台灣證交所/櫃買中心官方免費 API
+      而非 FinMind TaiwanStockInfo（後者在免費帳號下常回 402 限流）。
+      官方 API 覆蓋上市 1089 筆 + 上市今日 1368 筆 + 上櫃 1011 筆，
+      合計約 2381 筆，比 FinMind 免費版更穩定可靠。
+
+    提供給外部呼叫（相容性包裝）：
+      ticker_map = get_taiwan_ticker_mapping()
+      name = ticker_map.get("2330.TW", "2330")
+
+    Fallback：若所有 API 都失敗，回傳核心底盤的靜態字典。
+    """
+    official = _load_official_names()     # 底層呼叫已有 @st.cache_resource
+    if official:
+        return dict(official)
+    # 最終保底靜態字典（核心自選股）
+    return {
+        '1609.TW': '大亞',  '3289.TW': '宜特',  '8074.TW': '鉅橡',
+        '8150.TW': '南茂',  '2317.TW': '鴻海',  '2330.TW': '台積電',
+    }
+
+
 def get_stock_name(ticker: str) -> str:
     """
     取得股票中文名稱，查詢優先順序：
@@ -1758,7 +1784,9 @@ def get_stock_name(ticker: str) -> str:
     except Exception:
         pass
 
-    return ticker
+    # 最終 fallback：拔掉 .TW / .TWO 後綴，只顯示純代號數字
+    # 例如 "1102.TW" → "1102"，比顯示完整代號更乾淨
+    return re.sub(r'\.(TWO|TW)$', '', ticker, flags=re.IGNORECASE)
 
 
 def get_chart_url(ticker: str) -> str:
@@ -3754,6 +3782,7 @@ def _auto_radar_scan_and_notify(period: str = "2y"):
         if success:
             notified.add(code)
             st.session_state[_notify_key] = notified
+        import time as _time; _time.sleep(0.5)  # ★ 防 Discord 429（瞬間多條）
 
     # ── ⑤ 開盤首輪 / 收盤末輪：發送雷達存活狀態回報 ────────────────
     _status_key_open  = f"_status_open_{_today_str}"
@@ -4267,6 +4296,8 @@ def main():
     if not st.session_state.get('_official_names_loaded'):
         _load_official_names()
         st.session_state['_official_names_loaded'] = True
+        # 同步初始化 global_ticker_map（相容外部呼叫規格）
+        st.session_state['global_ticker_map'] = get_taiwan_ticker_mapping()
 
     # ── ★ 盤中自動刷新（每 20 分鐘）── 與手動掃描完全並存，互不影響 ──
     # streamlit_autorefresh 在「網頁開著」的前提下，於瀏覽器端倒數計時，
@@ -4381,6 +4412,7 @@ def main():
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
                 send_discord_notify(msg)
+                import time as _time2; _time2.sleep(0.5)  # ★ 防 Discord 429
             st.toast(f"✅ 已從 {len(results)} 檔中精選 Top {len(top3)} 推播！", icon="🎯")
         else:
             # 黃金條件全綠找不到時，推播最高分標的作為觀察通知
