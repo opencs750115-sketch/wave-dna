@@ -2111,49 +2111,44 @@ def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
     """
     取得「全市場成交量前 N 大」+「漲跌幅前 N 大」+「核心保障底盤」的
     合併掃描池，初選池總數約 100 檔（含核心底盤 5 檔）。
-    ─────────────────────────────────────────────────────────────────────
-    撈取三個來源：
-      (a) fetch_tw_realtime_hot('volume', top_n) — 成交量排行前 N 名（量大熱門）
-      (b) fetch_tw_realtime_hot('gain',   top_n) — 漲幅排行前 N 名（波動焦點）
-      (c) fetch_tw_realtime_hot('loss',   top_n) — 跌幅排行前 N 名（波動焦點）
-          (b)+(c) 合計即「漲跌幅最劇烈」的標的，若已在(a)中則自動去重複
 
-    與 CORE_RADAR_WATCHLIST 合併、去重複，核心股優先排在最前面確保必掃。
-
-    ★ 容錯設計：三個來源各自獨立 try-except，任一來源抓取失敗
-      （Yahoo 限流/逾時）都不影響其他來源，最差情況優雅降級為
-      只回傳 CORE_RADAR_WATCHLIST，絕不讓整個雷達系統因此掛掉。
-
-    回傳：去重複後的代號清單（核心底盤5檔 + 約95檔來自三個排行，
-          因排行間可能重疊，實際總數通常落在 80~100 檔之間）
+    ★ Agent B 升級：加入重試機制（最多 2 次）
+      Streamlit Cloud 冷啟動或共享 IP 剛被解封時，第一次 curl_cffi 請求
+      可能因網路尚未穩定而失敗，重試 2 秒後通常可以成功。
+      三個來源各自獨立重試，任一來源全部失敗也不影響其他來源。
     """
+    import time as _time
+
+    def _fetch_with_retry(rank_type: str, top_n: int, max_retries: int = 2) -> list[str]:
+        """帶重試的單一排行來源抓取，Agent B 實作"""
+        for attempt in range(max_retries + 1):
+            try:
+                tickers, _meta, ok, _msg = fetch_tw_realtime_hot(rank_type, top_n)
+                if ok and tickers:
+                    return tickers
+                # 未成功但無例外 → 等待後重試
+                if attempt < max_retries:
+                    _time.sleep(2)
+            except Exception:
+                if attempt < max_retries:
+                    _time.sleep(2)
+        return []
+
     pool: list[str] = []
 
     # (a) 成交量排行（量大熱門股）
-    try:
-        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('volume', top_n)
-        if ok and tickers:
-            pool.extend(tickers)
-    except Exception:
-        pass
+    result_a = _fetch_with_retry('volume', top_n)
+    pool.extend(result_a)
 
     # (b) 漲幅排行（波動焦點股·上）
-    try:
-        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('gain', top_n)
-        if ok and tickers:
-            pool.extend(tickers)
-    except Exception:
-        pass
+    result_b = _fetch_with_retry('gain', top_n)
+    pool.extend(result_b)
 
     # (c) 跌幅排行（波動焦點股·下，含超跌反彈題材）
-    try:
-        tickers, _meta, ok, _msg = fetch_tw_realtime_hot('loss', top_n)
-        if ok and tickers:
-            pool.extend(tickers)
-    except Exception:
-        pass
+    result_c = _fetch_with_retry('loss', top_n)
+    pool.extend(result_c)
 
-    # 合併核心底盤並去重複（保留順序，核心股優先排在前面確保一定被掃到）
+    # 合併核心底盤並去重複（核心股優先排在前面確保一定被掃到）
     merged = list(CORE_RADAR_WATCHLIST)
     seen   = set(merged)
     for t in pool:
@@ -2279,23 +2274,24 @@ def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
         from curl_cffi.requests import Session as CffiSession
         with CffiSession(impersonate="chrome124") as s:
             # Step 1: 建立 Cookie Session
+            # ★ Agent B：timeout 從 10 → 20 秒，Streamlit Cloud 冷啟動時網路延遲大
             s.get("https://finance.yahoo.com/",
-                  timeout=10,
+                  timeout=20,
                   headers={'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8'})
 
-            # Step 2: 取得 crumb
-            cr = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=8)
+            # Step 2: 取得 crumb（timeout 從 8 → 15 秒）
+            cr = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15)
             crumb = cr.text.strip() if cr.status_code == 200 else ""
 
             # Fallback: 換 query2
             if not crumb or '{' in crumb:
-                cr2 = s.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=8)
+                cr2 = s.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=15)
                 crumb = cr2.text.strip() if cr2.status_code == 200 else ""
 
             if not crumb or '{' in crumb:
                 return []
 
-            # Step 3: 呼叫 Screener
+            # Step 3: 呼叫 Screener（timeout 從 15 → 25 秒）
             url  = (f"https://query1.finance.yahoo.com/v1/finance/screener"
                     f"?formatted=false&lang=zh-TW&region=TW&crumb={crumb}")
             body = {
@@ -2308,7 +2304,7 @@ def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
                 },
                 "userId": "", "userIdType": "guid"
             }
-            resp = s.post(url, json=body, timeout=15)
+            resp = s.post(url, json=body, timeout=25)
             if resp.status_code == 200:
                 return (resp.json()
                         .get('finance', {})
@@ -4478,8 +4474,10 @@ def main():
 
     # ★ 盤中自動掃描：只在 autorefresh 計數器遞增時執行
     # 手動切換 Sidebar/頁面觸發的 rerun，_autorefresh_count 不變 → 跳過掃描
-    # 這是「轉圈圈/切換卡頓」的最根本修正
-    _last_radar_count = st.session_state.get('_last_radar_count', -1)
+    # ★ Agent A 修正：_last_radar_count 初始值改為 0（與第一次 _autorefresh_count=0 相同）
+    # 確保「第一次進頁面」不自動觸發掃描（冷啟動時 curl_cffi 可能尚未穩定）
+    # 只有 autorefresh 真正計時到（_autorefresh_count 從 0 遞增到 1）才觸發第一次掃描
+    _last_radar_count = st.session_state.get('_last_radar_count', 0)
     if _in_market and _auto_radar_on and _autorefresh_count != _last_radar_count:
         st.session_state['_last_radar_count'] = _autorefresh_count
         _auto_radar_scan_and_notify(period=period)
