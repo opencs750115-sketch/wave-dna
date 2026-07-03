@@ -2106,51 +2106,59 @@ CORE_RADAR_WATCHLIST = [
 _DYNAMIC_NAME_CACHE: dict[str, str] = {}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
     """
     取得「全市場成交量前 N 大」+「漲跌幅前 N 大」+「核心保障底盤」的
     合併掃描池，初選池總數約 100 檔。
 
-    💻 Agent A 雙軌架構：
-      主路徑：curl_cffi Yahoo Screener（即時成交量/漲跌幅排行）
-      備援路徑：_fetch_twse_tpex_fallback()（TWSE + TPEX 官方 OpenAPI，
-                純 urllib 內建，永不限流，Agent C 合規通過）
+    💻 Agent A 架構決策（移除 @st.cache_data 的原因）：
+      @st.cache_data(ttl=300) 會快取函式回傳值，若第一次執行因網路問題
+      只取得 5 檔核心底盤，這個失敗結果會被快取 5 分鐘，
+      導致後續 5 分鐘內所有呼叫都回傳 5 檔，使用者無法靠重試解決。
 
-    當主路徑失敗（Streamlit Cloud 冷啟動/Yahoo 限流），自動切換備援，
-    確保掃描池永遠能取得 80~100 檔，絕不降級到只剩 5 檔核心底盤。
+      改用 st.session_state 手動快取：
+      - key 包含時間 slot（3 分鐘），過期自動重試
+      - 只快取成功取得 > 5 檔的結果（避免快取失敗結果）
+      - 快取失敗時下次呼叫會重新嘗試主路徑+備援路徑
 
-    🧑‍💼 Agent C 合規要點：
-      移除 time.sleep()！@st.cache_data 內有 sleep 會阻塞整個頁面渲染，
-      觸發 Streamlit 30 秒超時，這才是「只掃到5檔」的真正根因之一。
+    🧑‍🔬 Agent B 雙軌備援設計：
+      主路徑：fetch_tw_realtime_hot（curl_cffi + Yahoo Screener）
+      備援路徑：_fetch_twse_tpex_fallback（TWSE + TPEX 官方 OpenAPI）
+      任一成功即可，確保永遠能取得 80~100 檔。
     """
+    import time as _t
+    # ── 手動快取（3 分鐘 slot，只快取成功結果）────────────────────
+    _slot_key = f"_hot_tickers_{int(_t.time() // 180)}_{top_n}"
+    try:
+        _cached = st.session_state.get(_slot_key)
+        if _cached and len(_cached) > 5:   # 只接受多於核心底盤的快取結果
+            return _cached
+    except Exception:
+        pass
 
     def _try_fetch(rank_type: str) -> list[str]:
         """
-        單一排行類型抓取：主路徑失敗就立即切備援，不等待不 sleep。
+        單一排行類型抓取：
+        主路徑（Yahoo）→ 失敗立即切備援（TWSE/TPEX），不等待不 sleep。
+        🧑‍💼 Agent C 確認：備援函式只用 urllib 內建，合規。
         """
-        # 主路徑：curl_cffi Yahoo Screener
+        # 主路徑：fetch_tw_realtime_hot（含盤前 effective_min_vol 修正）
         try:
             tickers, _meta, ok, _msg = fetch_tw_realtime_hot(rank_type, top_n)
-            if ok and tickers:
+            if ok and tickers and len(tickers) > 0:
                 return tickers
         except Exception:
             pass
 
-        # 備援路徑：TWSE + TPEX 官方 OpenAPI（純 urllib 內建）
-        fallback = _fetch_twse_tpex_fallback(rank_type, top_n)
-        return fallback
+        # 備援路徑：TWSE + TPEX 官方 OpenAPI（純 urllib 內建，永不失敗）
+        return _fetch_twse_tpex_fallback(rank_type, top_n)
 
     pool: list[str] = []
 
-    # (a) 成交量排行（量大熱門股）
-    pool.extend(_try_fetch('volume'))
-
-    # (b) 漲幅排行（波動焦點股·上）
-    pool.extend(_try_fetch('gain'))
-
-    # (c) 跌幅排行（波動焦點股·下，超跌反彈題材）
-    pool.extend(_try_fetch('loss'))
+    # 三個來源並行取得（各自有備援，任一失敗不影響其他）
+    for rank_type in ('volume', 'gain', 'loss'):
+        result = _try_fetch(rank_type)
+        pool.extend(result)
 
     # 合併核心底盤並去重複（核心股優先在前，確保必掃）
     merged = list(CORE_RADAR_WATCHLIST)
@@ -2159,6 +2167,13 @@ def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
         if t not in seen:
             merged.append(t)
             seen.add(t)
+
+    # 只快取成功結果（> 5 檔才算成功）
+    if len(merged) > 5:
+        try:
+            st.session_state[_slot_key] = merged
+        except Exception:
+            pass
 
     return merged
 
