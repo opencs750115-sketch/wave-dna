@@ -2435,17 +2435,33 @@ def fetch_tw_realtime_hot(
 ) -> tuple[list[str], list[dict], bool, str]:
     """
     即時從 Yahoo Finance 抓取台灣上市(TAI)＋上櫃(TWO)的熱門排行。
+    失敗時自動切換 TWSE + TPEX 官方 OpenAPI 備援（純 urllib 內建）。
 
-    ★ 底層改用 _fetch_screener_cffi:
-      curl_cffi 模擬 Chrome 指紋 + Cookie Session,解決 Streamlit Cloud
-      共享 IP 被 Yahoo 限流(429)的根本問題。yf.screen() 只作為備用。
+    💻 Agent A 雙軌架構：
+      主路徑：curl_cffi Yahoo Screener（盤中即時資料）
+      備援路徑：_fetch_twse_tpex_fallback()（TWSE + TPEX 官方 API，永不失敗）
+
+    🧑‍🔬 Agent B 關鍵修正（盤前 8:20 問題根因）：
+      Yahoo Screener 在盤前回傳的 volume 為 0，被 min_vol >= 500_000 過濾掉
+      → 即使 Yahoo 回傳資料，也全部被過濾 → 顯示「無法連線」。
+      修正：盤前/盤後自動放寬 effective_min_vol = 0，讓資料通過。
 
     回傳: (tickers, meta_list, success: bool, message: str)
-      success=False 時呼叫端應自動切換靜態清單
     """
     global _REALTIME_NAME_CACHE
 
-    all_quotes = []
+    # ★ Agent B：盤前/盤後自動放寬 min_vol
+    # 台股交易時段 09:00~13:35，盤前/盤後 volume=0，不應套用最小成交量門檻
+    try:
+        import pytz as _pytz
+        _tw = datetime.datetime.now(_pytz.timezone('Asia/Taipei'))
+        _in_market = (datetime.time(9, 0) <= _tw.time() <= datetime.time(13, 35)
+                      and _tw.weekday() < 5)
+    except Exception:
+        _in_market = True
+    effective_min_vol = min_vol if _in_market else 0
+
+    all_quotes      = []
     failed_exchanges = []
 
     for exchange in ['TAI', 'TWO']:
@@ -2473,18 +2489,44 @@ def fetch_tw_realtime_hot(
         else:
             failed_exchanges.append(exchange)
 
+    # ★ 主路徑完全失敗 → 直接用 TWSE/TPEX 備援（永不失敗）
     if len(failed_exchanges) == 2:
+        fallback_tickers = _fetch_twse_tpex_fallback(rank_type, size)
+        if fallback_tickers:
+            meta_list = [{"symbol": t, "name": get_stock_name(t),
+                          "price": 0.0, "chg_pct": 0.0, "volume": 0}
+                         for t in fallback_tickers]
+            return fallback_tickers, meta_list, True, f"備援模式（TWSE+TPEX）取得 {len(fallback_tickers)} 筆"
         return [], [], False, "Yahoo Screener 暫時無法連線，已自動切換靜態清單"
 
-    # 過濾純4位數字代號
+    # 過濾純4位數字代號（使用放寬後的 effective_min_vol）
     filtered = []
     for q in all_quotes:
-        sym  = q.get('symbol', '')
-        code = sym[:-4] if sym.endswith('.TWO') else sym[:-3] if sym.endswith('.TW') else sym
+        sym   = q.get('symbol', '')
+        code  = sym[:-4] if sym.endswith('.TWO') else sym[:-3] if sym.endswith('.TW') else sym
         price = float(q.get('regularMarketPrice', 0) or 0)
         vol   = int(q.get('regularMarketVolume', 0) or 0)
-        if re.match(r'^\d{4}$', code) and price >= min_price and vol >= min_vol:
+        if re.match(r'^\d{4}$', code) and price >= min_price and vol >= effective_min_vol:
             filtered.append(q)
+
+    # 若過濾後仍為空（盤前某些情況），完全放寬 volume 門檻
+    if not filtered and all_quotes:
+        for q in all_quotes:
+            sym   = q.get('symbol', '')
+            code  = sym[:-4] if sym.endswith('.TWO') else sym[:-3] if sym.endswith('.TW') else sym
+            price = float(q.get('regularMarketPrice', 0) or 0)
+            if re.match(r'^\d{4}$', code) and price >= min_price:
+                filtered.append(q)
+
+    # 若仍為空，用 TWSE/TPEX 備援補足
+    if not filtered:
+        fallback_tickers = _fetch_twse_tpex_fallback(rank_type, size)
+        if fallback_tickers:
+            meta_list = [{"symbol": t, "name": get_stock_name(t),
+                          "price": 0.0, "chg_pct": 0.0, "volume": 0}
+                         for t in fallback_tickers]
+            partial = f"（{'/'.join(failed_exchanges)} 部分缺失）" if failed_exchanges else ""
+            return fallback_tickers, meta_list, True, f"備援補足（TWSE）{len(fallback_tickers)} 筆{partial}"
 
     if rank_type == 'gain':
         filtered.sort(key=lambda x: float(x.get('regularMarketChangePercent', 0) or 0),
