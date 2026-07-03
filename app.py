@@ -1112,6 +1112,72 @@ def compute_winrate(dna: dict, df: pd.DataFrame) -> dict:
 #  模組 C: 未來 10 日前瞻路徑矩陣
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  📦 籌碼資料本地 Pickle 快取（需求 4d）
+#  ★ Agent C 合規確認：只使用 Python 內建 pickle, os, datetime，無第三方套件
+#  ─────────────────────────────────────────────────────────────────────────────
+#  用途：當 Streamlit Cloud 因閒置重啟（session_state 清空）時，
+#        優先從本地 /tmp/finmind_chip_cache_{YYYYMMDD}.pkl 讀取當日籌碼，
+#        避免重啟後立即耗盡 FinMind 免費額度重打所有股票。
+#
+#  設計：
+#    寫入時機：_cache_chip_result() 成功儲存 session_state 時，同步寫入 pickle
+#    讀取時機：_get_cached_chip_result() 發現 session_state 無資料時，
+#              嘗試從 pickle 還原當日資料回 session_state
+#    檔案命名：日期作為一部分（/tmp/finmind_chip_cache_20260701.pkl），
+#              每天自動換新檔，舊檔不干擾
+# ─────────────────────────────────────────────────────────────────────────────
+
+import pickle as _pickle
+import os as _os
+
+def _get_pickle_path() -> str:
+    """回傳今日籌碼快取檔案路徑（/tmp/finmind_chip_cache_{YYYYMMDD}.pkl）"""
+    today = datetime.date.today().strftime('%Y%m%d')
+    return f"/tmp/finmind_chip_cache_{today}.pkl"
+
+
+def _pickle_write_chip(cache_key: str, result: dict) -> None:
+    """
+    ★ Agent B 實作：將單筆籌碼結果寫入本地 pickle 快取。
+    只寫入成功的籌碼（available=True），失敗結果不寫入本地，
+    避免把「402 額度限制」的臨時失敗永久存到磁碟。
+    """
+    if not result.get("available"):
+        return   # 只持久化成功資料
+    try:
+        pkl_path = _get_pickle_path()
+        # 讀取現有資料再合併（避免覆蓋其他 key）
+        existing: dict = {}
+        if _os.path.exists(pkl_path):
+            try:
+                with open(pkl_path, 'rb') as f:
+                    existing = _pickle.load(f)
+            except Exception:
+                existing = {}
+        existing[cache_key] = result
+        with open(pkl_path, 'wb') as f:
+            _pickle.dump(existing, f)
+    except Exception:
+        pass   # 寫入失敗不影響主流程
+
+
+def _pickle_read_chip(cache_key: str) -> dict | None:
+    """
+    ★ Agent B 實作：從本地 pickle 快取讀取單筆籌碼結果。
+    只讀今日的 pkl 檔（日期在檔名中），昨天的快取自動失效。
+    """
+    try:
+        pkl_path = _get_pickle_path()
+        if not _os.path.exists(pkl_path):
+            return None
+        with open(pkl_path, 'rb') as f:
+            data = _pickle.load(f)
+        return data.get(cache_key)
+    except Exception:
+        return None
+
+
 def _cache_chip_result(cache_key: str, result: dict, ttl_minutes: int | None = None):
     """
     將籌碼查詢結果（成功或失敗）寫入 session_state 快取。
@@ -1129,6 +1195,8 @@ def _cache_chip_result(cache_key: str, result: dict, ttl_minutes: int | None = N
             result_with_meta["_cached_at"]    = datetime.datetime.now().timestamp()
             result_with_meta["_ttl_minutes"]  = ttl_minutes
         st.session_state[cache_key] = result_with_meta
+        # ★ 同步寫入本地 pickle（只寫成功資料，重啟後可恢復）
+        _pickle_write_chip(cache_key, result)
     except Exception:
         pass
 
@@ -1137,20 +1205,34 @@ def _get_cached_chip_result(cache_key: str) -> dict | None:
     """
     讀取籌碼快取，並檢查短時快取（ttl_minutes）是否已過期。
     過期則回傳 None（視同快取未命中），讓呼叫端重新打 API。
+
+    ★ 優先順序（Agent A 架構設計）：
+      1. session_state（最快，記憶體）
+      2. 本地 pickle 快取（Streamlit 重啟後的第二道防線）
+      3. 回傳 None → 呼叫端重打 FinMind API
     """
     try:
         cached = st.session_state.get(cache_key)
-        if cached is None:
-            return None
+        if cached is not None:
+            ttl = cached.get("_ttl_minutes")
+            if ttl is not None:
+                cached_at = cached.get("_cached_at", 0)
+                elapsed_min = (datetime.datetime.now().timestamp() - cached_at) / 60
+                if elapsed_min >= ttl:
+                    return None   # 短時快取已過期，觸發重新查詢
+            return cached
 
-        ttl = cached.get("_ttl_minutes")
-        if ttl is not None:
-            cached_at = cached.get("_cached_at", 0)
-            elapsed_min = (datetime.datetime.now().timestamp() - cached_at) / 60
-            if elapsed_min >= ttl:
-                return None   # 短時快取已過期，視同未命中，觸發重新查詢
+        # ★ session_state 無資料（可能 Streamlit 重啟）→ 嘗試從 pickle 恢復
+        pkl_cached = _pickle_read_chip(cache_key)
+        if pkl_cached is not None:
+            # 還原到 session_state，後續不再讀 pickle
+            try:
+                st.session_state[cache_key] = pkl_cached
+            except Exception:
+                pass
+            return pkl_cached
 
-        return cached
+        return None
     except Exception:
         return None
 
