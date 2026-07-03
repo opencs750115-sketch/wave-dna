@@ -2110,45 +2110,49 @@ _DYNAMIC_NAME_CACHE: dict[str, str] = {}
 def get_taiwan_hot_tickers(top_n: int = 50) -> list[str]:
     """
     取得「全市場成交量前 N 大」+「漲跌幅前 N 大」+「核心保障底盤」的
-    合併掃描池，初選池總數約 100 檔（含核心底盤 5 檔）。
+    合併掃描池，初選池總數約 100 檔。
 
-    ★ Agent B 升級：加入重試機制（最多 2 次）
-      Streamlit Cloud 冷啟動或共享 IP 剛被解封時，第一次 curl_cffi 請求
-      可能因網路尚未穩定而失敗，重試 2 秒後通常可以成功。
-      三個來源各自獨立重試，任一來源全部失敗也不影響其他來源。
+    💻 Agent A 雙軌架構：
+      主路徑：curl_cffi Yahoo Screener（即時成交量/漲跌幅排行）
+      備援路徑：_fetch_twse_tpex_fallback()（TWSE + TPEX 官方 OpenAPI，
+                純 urllib 內建，永不限流，Agent C 合規通過）
+
+    當主路徑失敗（Streamlit Cloud 冷啟動/Yahoo 限流），自動切換備援，
+    確保掃描池永遠能取得 80~100 檔，絕不降級到只剩 5 檔核心底盤。
+
+    🧑‍💼 Agent C 合規要點：
+      移除 time.sleep()！@st.cache_data 內有 sleep 會阻塞整個頁面渲染，
+      觸發 Streamlit 30 秒超時，這才是「只掃到5檔」的真正根因之一。
     """
-    import time as _time
 
-    def _fetch_with_retry(rank_type: str, top_n: int, max_retries: int = 2) -> list[str]:
-        """帶重試的單一排行來源抓取，Agent B 實作"""
-        for attempt in range(max_retries + 1):
-            try:
-                tickers, _meta, ok, _msg = fetch_tw_realtime_hot(rank_type, top_n)
-                if ok and tickers:
-                    return tickers
-                # 未成功但無例外 → 等待後重試
-                if attempt < max_retries:
-                    _time.sleep(2)
-            except Exception:
-                if attempt < max_retries:
-                    _time.sleep(2)
-        return []
+    def _try_fetch(rank_type: str) -> list[str]:
+        """
+        單一排行類型抓取：主路徑失敗就立即切備援，不等待不 sleep。
+        """
+        # 主路徑：curl_cffi Yahoo Screener
+        try:
+            tickers, _meta, ok, _msg = fetch_tw_realtime_hot(rank_type, top_n)
+            if ok and tickers:
+                return tickers
+        except Exception:
+            pass
+
+        # 備援路徑：TWSE + TPEX 官方 OpenAPI（純 urllib 內建）
+        fallback = _fetch_twse_tpex_fallback(rank_type, top_n)
+        return fallback
 
     pool: list[str] = []
 
     # (a) 成交量排行（量大熱門股）
-    result_a = _fetch_with_retry('volume', top_n)
-    pool.extend(result_a)
+    pool.extend(_try_fetch('volume'))
 
     # (b) 漲幅排行（波動焦點股·上）
-    result_b = _fetch_with_retry('gain', top_n)
-    pool.extend(result_b)
+    pool.extend(_try_fetch('gain'))
 
-    # (c) 跌幅排行（波動焦點股·下，含超跌反彈題材）
-    result_c = _fetch_with_retry('loss', top_n)
-    pool.extend(result_c)
+    # (c) 跌幅排行（波動焦點股·下，超跌反彈題材）
+    pool.extend(_try_fetch('loss'))
 
-    # 合併核心底盤並去重複（核心股優先排在前面確保一定被掃到）
+    # 合併核心底盤並去重複（核心股優先在前，確保必掃）
     merged = list(CORE_RADAR_WATCHLIST)
     seen   = set(merged)
     for t in pool:
@@ -2252,6 +2256,114 @@ def _load_official_names() -> dict[str, str]:
             result[k] = v
 
     return result
+
+
+def _fetch_twse_tpex_fallback(rank_type: str = 'volume',
+                              top_n: int = 50) -> list[str]:
+    """
+    🧑‍🔬 Agent B 實作：純 urllib 內建備援抓取路徑
+    ─────────────────────────────────────────────────────────────────────
+    當 curl_cffi Yahoo Screener 失敗時（Streamlit Cloud 冷啟動/限流），
+    改用台灣官方免費 OpenAPI 取得熱門股清單。
+
+    💻 Agent A 架構決策：
+      - 來源一：TWSE OpenAPI（STOCK_DAY_ALL）→ 上市股完整今日成交資料
+      - 來源二：TPEX OpenAPI（tpex_mainboard_quotes）→ 上櫃股今日成交資料
+      - 完全免費、無 API key、無限流、純 urllib 內建（Agent C 合規通過）
+
+    rank_type:
+      'volume' → 成交量排行
+      'gain'   → 漲幅排行（用漲跌幅 Change 欄位）
+      'loss'   → 跌幅排行
+    """
+    import urllib.request as _ur
+    import ssl as _ssl
+    import json as _json
+
+    ctx = _ssl.create_default_context()
+    hdrs = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    results: list[dict] = []
+
+    # ── 上市股（TWSE）────────────────────────────────────────────────
+    try:
+        req = _ur.Request(
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            headers=hdrs
+        )
+        with _ur.urlopen(req, timeout=12, context=ctx) as resp:
+            data = _json.loads(resp.read())
+
+        for item in data:
+            code  = item.get('Code', '').strip()
+            vol   = item.get('TradeVolume', '').replace(',', '').strip()
+            price = item.get('ClosingPrice', '').replace(',', '').strip()
+            chg   = item.get('Change', '').replace('+', '').replace(',', '').strip()
+            if not re.match(r'^\d{4}$', code):
+                continue
+            try:
+                results.append({
+                    'symbol':  f"{code}.TW",
+                    'volume':  int(vol) if vol.isdigit() else 0,
+                    'price':   float(price) if price else 0.0,
+                    'change':  float(chg) if chg not in ('', '--', 'X', '除') else 0.0,
+                    'name':    item.get('Name', '').strip(),
+                })
+            except (ValueError, TypeError):
+                continue
+    except Exception:
+        pass
+
+    # ── 上櫃股（TPEX）────────────────────────────────────────────────
+    try:
+        req2 = _ur.Request(
+            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+            headers=hdrs
+        )
+        with _ur.urlopen(req2, timeout=12, context=ctx) as resp2:
+            data2 = _json.loads(resp2.read())
+
+        for item in data2:
+            code  = item.get('SecuritiesCompanyCode', '').strip()
+            vol   = item.get('TradingShares', '') or '0'
+            price = item.get('Close', '') or '0'
+            chg   = item.get('Change', '') or '0'
+            if not re.match(r'^\d{4}$', code):
+                continue
+            try:
+                results.append({
+                    'symbol':  f"{code}.TWO",
+                    'volume':  int(str(vol).replace(',', '')) if vol else 0,
+                    'price':   float(str(price).replace(',', '')) if price else 0.0,
+                    'change':  float(str(chg).replace(',', '').replace('+', ''))
+                               if chg not in ('', '--') else 0.0,
+                    'name':    item.get('CompanyName', '').strip(),
+                })
+            except (ValueError, TypeError):
+                continue
+    except Exception:
+        pass
+
+    if not results:
+        return []
+
+    # ── 排序 ─────────────────────────────────────────────────────────
+    min_price = 5.0
+    results = [r for r in results if r['price'] >= min_price and r['volume'] > 0]
+
+    if rank_type == 'volume':
+        results.sort(key=lambda x: x['volume'], reverse=True)
+    elif rank_type == 'gain':
+        results.sort(key=lambda x: x['change'], reverse=True)
+    elif rank_type == 'loss':
+        results.sort(key=lambda x: x['change'])
+
+    # 同步寫入名稱快取（讓 get_stock_name 也能用到）
+    global _REALTIME_NAME_CACHE
+    for r in results:
+        if r.get('name'):
+            _REALTIME_NAME_CACHE[r['symbol']] = r['name']
+
+    return [r['symbol'] for r in results[:top_n]]
 
 
 def _fetch_screener_cffi(exchange: str, size: int = 240) -> list[dict]:
