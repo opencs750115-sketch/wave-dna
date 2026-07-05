@@ -5585,26 +5585,53 @@ def main():
                         _safe = {"chip_tag": "辨識失敗",
                                  "score_modifier": 0,
                                  "one_line_reason": "圖片模糊或解析錯誤"}
+                        _err_detail = ""
                         try:
                             import io as _io, re as _re, json as _json
-                            _model  = _rfa_genai.GenerativeModel("gemini-1.5-flash")
-                            _img    = _rfa_Image.open(_io.BytesIO(img_bytes))
-                            _prompt = """你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
-1. 主力低檔防守/大單吃貨 → +7
-2. 高檔壓盤洗盤/主力不急追 → +2
-3. 均勢/量縮散戶盤 → 0
-4. 買盤空虛/流動性陷阱/主力出貨 → -7
-嚴格只輸出 JSON（不含 markdown 標籤）：
-{"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明"}"""
-                            _resp   = _model.generate_content([_prompt, _img])
-                            _clean  = _re.sub(r'```json\s*|```', '',
-                                              _resp.text).strip()
-                            _res    = _json.loads(_clean)
+                            _model = _rfa_genai.GenerativeModel("gemini-1.5-flash")
+                            _img   = _rfa_Image.open(_io.BytesIO(img_bytes))
+
+                            # 🧑‍🔬 Agent B：強化 Prompt
+                            # - 明確告知可能是深色/黑底手機 UI 截圖
+                            # - 提供更多上下文，不管背景顏色都能辨識
+                            # - 多格式容錯（允許 Gemini 輸出略有差異的 JSON）
+                            _prompt = """你是台股五檔委買委賣截圖的 AI 解析模組。
+這張截圖可能來自手機交易 App，背景可能是黑色或深色介面。
+截圖中有兩欄：左側是委買（買進量 + 買進價），右側是委賣（賣出價 + 賣出量）。
+數字可能是黃色、綠色、白色或紅色。
+
+請依據以下籌碼判讀邏輯評分：
+- 委買量明顯大於委賣量 / 低價買盤厚實 → 主力低檔防守或吃貨 → +7
+- 委賣有大單壓制但委買仍撐住 → 高檔洗盤觀望 → +2
+- 買賣雙方量能相當、無明顯大單 → 均勢散戶盤 → 0
+- 委賣量遠大於委買 / 買盤空虛潰散 → 主力出貨或流動性陷阱 → -7
+
+若圖片不清晰但可大致辨識，仍請給出最可能的分數，不要輕易放棄辨識。
+
+嚴格只輸出以下 JSON 格式，不含任何 markdown 符號或額外說明：
+{"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "委買580張vs賣158張，買方優勢明顯"}"""
+
+                            _resp  = _model.generate_content([_prompt, _img])
+                            _raw   = _resp.text.strip()
+                            # 清除 markdown 標籤（多種格式容錯）
+                            _clean = _re.sub(r'```(?:json)?\s*|```', '', _raw).strip()
+                            # 嘗試找到 JSON 物件（即使前後有雜訊）
+                            _match = _re.search(r'\{.*?\}', _clean, _re.DOTALL)
+                            if _match:
+                                _clean = _match.group(0)
+                            _res = _json.loads(_clean)
                             _res["score_modifier"] = max(-10,
                                 min(10, int(_res.get("score_modifier", 0))))
                             return _res
-                        except Exception:
-                            return _safe
+
+                        except _json.JSONDecodeError as e:
+                            _err_detail = f"JSON解析失敗: {e} | 原始回應: {_raw[:100] if '_raw' in dir() else '無'}"
+                        except Exception as e:
+                            _err_detail = f"{type(e).__name__}: {str(e)[:120]}"
+
+                        # 失敗時回傳帶診斷資訊的安全值
+                        _safe["one_line_reason"] = f"解析失敗（{_err_detail}）" if _err_detail else "圖片模糊或解析錯誤"
+                        return _safe
 
                     # ★ 先存結果再 rerun，確保下次渲染時結果已在 session_state
                     st.session_state[f"{_five_prefix}_result"] = _run_five_gemini(_five_bytes)
