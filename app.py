@@ -5523,7 +5523,9 @@ def main():
 
         # 🧑‍🔬 Agent B：Session State 防刷機制
         # key 格式：_five_level_{ticker} — 換股票自動清空，同股不重複打 API
-        _ss_key = f"_five_level_{used_ticker}"
+        _ss_key   = f"_five_level_{used_ticker}"
+        _hash_key = f"_five_hash_{used_ticker}"
+        _bytes_key = f"_five_bytes_{used_ticker}"  # ★ 圖片 bytes 持久化
         if _ss_key not in st.session_state:
             st.session_state[_ss_key] = None
 
@@ -5534,27 +5536,37 @@ def main():
             key=f"five_uploader_{used_ticker}"
         )
 
+        # ★ 修正根本問題：圖片 bytes 存入 session_state，rerun 後從快取重建
+        # file_uploader 在 Streamlit rerun 後會被清空，
+        # 把 bytes 另存後就能跨 rerun 保留，不再「跳回主畫面」
         if uploaded_five is not None:
-            # 圖片 hash 防重複打 API（同一張圖片不重複送）
             import hashlib as _hl
-            _img_hash = _hl.md5(uploaded_five.read()).hexdigest()
-            uploaded_five.seek(0)   # 讀完後 seek 回頭
-            _hash_key = f"_five_hash_{used_ticker}"
-
-            # 只有新圖片或手動點擊才觸發 AI
+            _raw_bytes = uploaded_five.read()
+            _img_hash  = _hl.md5(_raw_bytes).hexdigest()
             _is_new_img = st.session_state.get(_hash_key) != _img_hash
+            if _is_new_img:
+                # 新圖片 → 存 bytes 到 session_state，清除舊分析結果
+                st.session_state[_bytes_key] = _raw_bytes
+                st.session_state[_hash_key]  = _img_hash
+                st.session_state[_ss_key]    = None   # 清舊結果，等待按鈕觸發
 
-            if _is_new_img or st.button("🚀 啟動五檔多維快驗",
-                                         key=f"five_btn_{used_ticker}"):
+        # 從 session_state 讀取持久化的圖片（rerun 後依然存在）
+        _cached_bytes = st.session_state.get(_bytes_key)
+
+        if _cached_bytes:
+            # 只有手動點擊按鈕才觸發 AI（移除自動觸發，避免無限 rerun）
+            if st.button("🚀 啟動五檔多維快驗",
+                         key=f"five_btn_{used_ticker}",
+                         use_container_width=True):
                 with st.spinner("⚡ AI 正在解析五檔籌碼..."):
-                    # 🧑‍🔬 Agent B：Gemini 分析函式（內嵌，避免全域污染）
-                    def _analyze_five_level(img_file) -> dict:
+                    def _analyze_five_level(img_bytes: bytes) -> dict:
                         _safe = {"chip_tag": "辨識失敗",
                                  "score_modifier": 0,
                                  "one_line_reason": "圖片模糊或解析錯誤"}
                         try:
+                            import io as _io
                             _model = _genai.GenerativeModel("gemini-1.5-flash")
-                            _img   = _Image.open(img_file)
+                            _img   = _Image.open(_io.BytesIO(img_bytes))
                             _prompt = """
 你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
 1. 主力低檔防守/大單吃貨 → +7
@@ -5564,23 +5576,20 @@ def main():
 嚴格只輸出以下 JSON 格式（不含 markdown 標籤或任何說明文字）：
 {"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明原因"}
 """
-                            _resp = _model.generate_content([_prompt, _img])
+                            _resp  = _model.generate_content([_prompt, _img])
                             _clean = re.sub(r'```json\s*|```', '',
                                             _resp.text).strip()
                             _result = json.loads(_clean)
-                            # 防止 score_modifier 超出合理範圍
                             _result["score_modifier"] = max(-10,
                                 min(10, int(_result.get("score_modifier", 0))))
                             return _result
                         except Exception:
                             return _safe
 
-                    _result = _analyze_five_level(uploaded_five)
-                    st.session_state[_ss_key]   = _result
-                    st.session_state[_hash_key] = _img_hash
+                    st.session_state[_ss_key] = _analyze_five_level(_cached_bytes)
 
-            # ── 顯示分析結果 ─────────────────────────────────────────
-            _res = st.session_state[_ss_key]
+            # ── 顯示分析結果（rerun 後從 session_state 取，不再依賴 file_uploader）
+            _res = st.session_state.get(_ss_key)
             if _res:
                 # base_winrate 從本次計算結果取得（串接真實數值）
                 _base_wr    = round(wr["winrate"] * 100, 1)
