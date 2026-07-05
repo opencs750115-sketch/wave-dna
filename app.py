@@ -4396,7 +4396,16 @@ def render_sidebar():
         st.markdown("---")
 
         if mode == "🔍 單股分析":
-            analyze = st.button("🔍 開始 DNA 分析", use_container_width=True, type="primary")
+            # ★ session_state 鎖定分析狀態，避免任何 rerun 後跳回主畫面
+            _analyze_key = f"_analyzed_{ticker.strip()}"
+            if _analyze_key not in st.session_state:
+                st.session_state[_analyze_key] = False
+
+            if st.button("🔍 開始 DNA 分析",
+                         use_container_width=True, type="primary"):
+                st.session_state[_analyze_key] = True   # 點擊後永久鎖定
+
+            analyze = st.session_state[_analyze_key]    # 以 ss 為準，不受 rerun 影響
             scan    = False
             custom_raw = ""
             min_wr  = 70
@@ -4634,6 +4643,13 @@ def main():
     (ticker_raw, period, top_n, analyze,
      scan, custom_raw, min_wr, use_hot100, mode,
      scan_universe, scan_mode, min_entry_score) = render_sidebar()
+
+    # ★ 換股清除舊 analyze 狀態，避免換股後直接顯示上個股票的分析結果
+    _cur_ticker_key = "_last_analyzed_ticker"
+    _last_ticker = st.session_state.get(_cur_ticker_key, "")
+    if ticker_raw.strip() != _last_ticker:
+        # 新股票 → 清除舊的 analyze 鎖定（各股用各自的 key，不互相干擾）
+        st.session_state[_cur_ticker_key] = ticker_raw.strip()
 
     # ── ★ Discord 推播控制 ────────────────────────────────────────────
     # 每日重置推播記錄（用日期作 key，跨 session 也能每天重新推播）
@@ -5557,46 +5573,44 @@ def main():
         st.markdown('<div class="section-title">⚡ 盤中五檔即時勝率修正</div>',
                     unsafe_allow_html=True)
 
-        _col_a, _col_b = st.columns([3, 1])
-        with _col_a:
-            st.caption("已偵測到五檔截圖，按右側按鈕啟動 Gemini 解析")
-        with _col_b:
-            _do_analyze = st.button("🚀 快驗籌碼",
-                                    key=f"five_go_{used_ticker}",
-                                    type="primary",
-                                    use_container_width=True)
-
-        if _do_analyze:
-            with st.spinner("⚡ AI 正在解析五檔籌碼..."):
-                def _run_five_gemini(img_bytes: bytes) -> dict:
-                    _safe = {"chip_tag": "辨識失敗",
-                             "score_modifier": 0,
-                             "one_line_reason": "圖片模糊或解析錯誤"}
-                    try:
-                        import io as _io, re as _re, json as _json
-                        _model  = _rfa_genai.GenerativeModel("gemini-1.5-flash")
-                        _img    = _rfa_Image.open(_io.BytesIO(img_bytes))
-                        _prompt = """你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
+        if not _five_result:
+            # 尚未分析 → 顯示按鈕
+            st.caption("已偵測到五檔截圖，按下按鈕啟動 Gemini 解析")
+            if st.button("🚀 快驗籌碼",
+                         key=f"five_go_{ticker_raw.strip()}",
+                         type="primary",
+                         use_container_width=True):
+                with st.spinner("⚡ AI 正在解析五檔籌碼..."):
+                    def _run_five_gemini(img_bytes: bytes) -> dict:
+                        _safe = {"chip_tag": "辨識失敗",
+                                 "score_modifier": 0,
+                                 "one_line_reason": "圖片模糊或解析錯誤"}
+                        try:
+                            import io as _io, re as _re, json as _json
+                            _model  = _rfa_genai.GenerativeModel("gemini-1.5-flash")
+                            _img    = _rfa_Image.open(_io.BytesIO(img_bytes))
+                            _prompt = """你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
 1. 主力低檔防守/大單吃貨 → +7
 2. 高檔壓盤洗盤/主力不急追 → +2
 3. 均勢/量縮散戶盤 → 0
 4. 買盤空虛/流動性陷阱/主力出貨 → -7
 嚴格只輸出 JSON（不含 markdown 標籤）：
 {"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明"}"""
-                        _resp   = _model.generate_content([_prompt, _img])
-                        _clean  = _re.sub(r'```json\s*|```', '',
-                                          _resp.text).strip()
-                        _res    = _json.loads(_clean)
-                        _res["score_modifier"] = max(-10,
-                            min(10, int(_res.get("score_modifier", 0))))
-                        return _res
-                    except Exception:
-                        return _safe
+                            _resp   = _model.generate_content([_prompt, _img])
+                            _clean  = _re.sub(r'```json\s*|```', '',
+                                              _resp.text).strip()
+                            _res    = _json.loads(_clean)
+                            _res["score_modifier"] = max(-10,
+                                min(10, int(_res.get("score_modifier", 0))))
+                            return _res
+                        except Exception:
+                            return _safe
 
-                _five_result = _run_five_gemini(_five_bytes)
-                st.session_state[f"{_five_prefix}_result"] = _five_result
+                    # ★ 先存結果再 rerun，確保下次渲染時結果已在 session_state
+                    st.session_state[f"{_five_prefix}_result"] = _run_five_gemini(_five_bytes)
+                st.rerun()   # ★ 強制重跑，讓結果區塊正常渲染
 
-        # ── 顯示結果（rerun 後從 session_state 讀，不閃退）────────────
+        # ── 顯示結果（rerun 後從 session_state 讀，永遠不會消失）────
         if _five_result:
             _base_wr  = round(wr["winrate"] * 100, 1)
             _modifier = _five_result["score_modifier"]
