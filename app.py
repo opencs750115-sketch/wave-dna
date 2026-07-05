@@ -5586,16 +5586,19 @@ def main():
                                  "score_modifier": 0,
                                  "one_line_reason": "圖片模糊或解析錯誤"}
                         _err_detail = ""
-                        try:
-                            import io as _io, re as _re, json as _json
-                            _model = _rfa_genai.GenerativeModel("gemini-2.0-flash")
-                            _img   = _rfa_Image.open(_io.BytesIO(img_bytes))
 
-                            # 🧑‍🔬 Agent B：強化 Prompt
-                            # - 明確告知可能是深色/黑底手機 UI 截圖
-                            # - 提供更多上下文，不管背景顏色都能辨識
-                            # - 多格式容錯（允許 Gemini 輸出略有差異的 JSON）
-                            _prompt = """你是台股五檔委買委賣截圖的 AI 解析模組。
+                        import io as _io, re as _re, json as _json, time as _time
+
+                        # 🧑‍🔬 Agent B：指數退避重試（最多3次）
+                        # RPM 限制通常 60 秒後解除，等待後重試不需使用者手動再按
+                        _max_retries = 3
+                        _wait_secs   = [5, 20, 60]   # 第1次等5秒，第2次20秒，第3次60秒
+
+                        for _attempt in range(_max_retries):
+                            try:
+                                _model = _rfa_genai.GenerativeModel("gemini-2.0-flash")
+                                _img   = _rfa_Image.open(_io.BytesIO(img_bytes))
+                                _prompt = """你是台股五檔委買委賣截圖的 AI 解析模組。
 這張截圖可能來自手機交易 App，背景可能是黑色或深色介面。
 截圖中有兩欄：左側是委買（買進量 + 買進價），右側是委賣（賣出價 + 賣出量）。
 數字可能是黃色、綠色、白色或紅色。
@@ -5610,26 +5613,40 @@ def main():
 
 嚴格只輸出以下 JSON 格式，不含任何 markdown 符號或額外說明：
 {"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "委買580張vs賣158張，買方優勢明顯"}"""
+                                _resp  = _model.generate_content([_prompt, _img])
+                                _raw   = _resp.text.strip()
+                                _clean = _re.sub(r'```(?:json)?\s*|```', '', _raw).strip()
+                                _match = _re.search(r'\{.*?\}', _clean, _re.DOTALL)
+                                if _match:
+                                    _clean = _match.group(0)
+                                _res = _json.loads(_clean)
+                                _res["score_modifier"] = max(-10,
+                                    min(10, int(_res.get("score_modifier", 0))))
+                                return _res   # ✅ 成功，直接回傳
 
-                            _resp  = _model.generate_content([_prompt, _img])
-                            _raw   = _resp.text.strip()
-                            # 清除 markdown 標籤（多種格式容錯）
-                            _clean = _re.sub(r'```(?:json)?\s*|```', '', _raw).strip()
-                            # 嘗試找到 JSON 物件（即使前後有雜訊）
-                            _match = _re.search(r'\{.*?\}', _clean, _re.DOTALL)
-                            if _match:
-                                _clean = _match.group(0)
-                            _res = _json.loads(_clean)
-                            _res["score_modifier"] = max(-10,
-                                min(10, int(_res.get("score_modifier", 0))))
-                            return _res
+                            except _json.JSONDecodeError as e:
+                                # JSON 格式錯誤不重試（Gemini 輸出問題，等不了）
+                                _err_detail = f"JSON解析失敗: {e} | 原始: {_raw[:80] if '_raw' in dir() else ''}"
+                                break
 
-                        except _json.JSONDecodeError as e:
-                            _err_detail = f"JSON解析失敗: {e} | 原始回應: {_raw[:100] if '_raw' in dir() else '無'}"
-                        except Exception as e:
-                            _err_detail = f"{type(e).__name__}: {str(e)[:120]}"
+                            except Exception as e:
+                                _err_str = str(e)
+                                if "429" in _err_str or "quota" in _err_str.lower() or "ResourceExhausted" in _err_str:
+                                    # ★ 429 限流 → 等待後重試
+                                    if _attempt < _max_retries - 1:
+                                        _wait = _wait_secs[_attempt]
+                                        _err_detail = f"429 限流，第{_attempt+1}次重試中（等待{_wait}秒）..."
+                                        _time.sleep(_wait)
+                                        continue
+                                    else:
+                                        _err_detail = "Gemini 429 限流，請稍後幾分鐘再試（共享 IP 限制或每分鐘額度已滿）"
+                                elif "404" in _err_str or "not found" in _err_str.lower():
+                                    _err_detail = "Gemini 模型版本不支援，請聯繫開發者更新"
+                                    break
+                                else:
+                                    _err_detail = f"{type(e).__name__}: {_err_str[:100]}"
+                                    break
 
-                        # 失敗時回傳帶診斷資訊的安全值
                         _safe["one_line_reason"] = f"解析失敗（{_err_detail}）" if _err_detail else "圖片模糊或解析錯誤"
                         return _safe
 
