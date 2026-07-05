@@ -5538,7 +5538,7 @@ def main():
     #   render_forward_table 之後顯示結果，rerun 後從 ss 讀取，不閃退
     # Agent C 合規：try-import 保護，未設定 GEMINI_API_KEY 時靜默跳過
     # ══════════════════════════════════════════════════════════════════
-    _five_prefix  = f"_five_{used_ticker}"
+    _five_prefix  = f"_five_{ticker_raw.strip()}"   # ★ 與 Sidebar 用相同的 key
     _five_bytes   = st.session_state.get(f"{_five_prefix}_bytes")
     _five_result  = st.session_state.get(f"{_five_prefix}_result")
     _rfa_gemini_ok = False
