@@ -4290,6 +4290,41 @@ def render_sidebar():
                 placeholder="台股: 2330 / 8150  美股: AAPL",
                 help="台股輸入數字代號即可(自動補 .TW),美股輸入英文代號"
             )
+
+            # ── ⚡ 五檔速驗（可選）─────────────────────────────────────
+            # Agent A：放在股票代號下方、按鈕之前，上傳後與 DNA 分析一起觸發
+            # Agent B：圖片 bytes 立刻存入 session_state，不依賴跨 rerun 的 file_uploader
+            # Agent C：try-import 保護，Gemini 未設定時整個區塊靜默跳過
+            _five_key_prefix = f"_five_{ticker.strip()}"
+            _sb_gemini_ok = False
+            try:
+                import google.generativeai as _sb_genai  # noqa
+                _sb_key = st.secrets.get("GEMINI_API_KEY", "")
+                if _sb_key:
+                    _sb_gemini_ok = True
+            except Exception:
+                pass
+
+            if _sb_gemini_ok:
+                st.markdown(
+                    '<div style="font-size:11px;color:#4a6fa5;margin:8px 0 4px;">'
+                    '⚡ 五檔截圖（選填）— 不上傳也可直接分析</div>',
+                    unsafe_allow_html=True
+                )
+                _sb_uploader = st.file_uploader(
+                    "五檔截圖",
+                    type=["png", "jpg", "jpeg"],
+                    label_visibility="collapsed",
+                    key=f"sb_five_{ticker.strip()}"
+                )
+                # ★ 立刻存 bytes，不等按鈕觸發 rerun
+                if _sb_uploader is not None:
+                    _sb_bytes = _sb_uploader.read()
+                    if _sb_bytes:
+                        st.session_state[f"{_five_key_prefix}_bytes"] = _sb_bytes
+                        st.caption("✅ 截圖已暫存，按「開始 DNA 分析」一起送出")
+                elif st.session_state.get(f"{_five_key_prefix}_bytes"):
+                    st.caption("📎 已有上次截圖（換代號或重新上傳可更新）")
         elif mode == "⭐ 自選股":
             ticker = ""
             st.markdown(
@@ -5495,154 +5530,126 @@ def main():
     render_forward_table(rows, wr["close"])
 
     # ══════════════════════════════════════════════════════════════════
-    # ⚡ 盤中五檔即時勝率修正（Gemini Vision 速驗模組）
+    # ⚡ 盤中五檔即時勝率修正（Gemini Vision 速驗模組 v2）
     # ══════════════════════════════════════════════════════════════════
-    # 💻 Agent A：try-import 安全框架
-    # 只要 google-generativeai 或 Pillow 未安裝，整個模組靜默跳過，
-    # 絕不影響上方所有技術面/籌碼面功能。
-    # 🧑‍💼 Agent C：Gemini API key 不存在時同樣靜默跳過，不報錯。
-    _gemini_ready = False
-    try:
-        import google.generativeai as _genai
-        from PIL import Image as _Image
-        _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-        if _gemini_key:
-            _genai.configure(api_key=_gemini_key)
-            _gemini_ready = True
-    except Exception:
-        pass   # 套件未安裝或 secrets 未設定 → 整個模組不顯示
+    # Agent A 架構：
+    #   圖片在 Sidebar 就存入 session_state（bytes）
+    #   分析結果按鈕觸發後存入 session_state（dict）
+    #   render_forward_table 之後顯示結果，rerun 後從 ss 讀取，不閃退
+    # Agent C 合規：try-import 保護，未設定 GEMINI_API_KEY 時靜默跳過
+    # ══════════════════════════════════════════════════════════════════
+    _five_prefix  = f"_five_{used_ticker}"
+    _five_bytes   = st.session_state.get(f"{_five_prefix}_bytes")
+    _five_result  = st.session_state.get(f"{_five_prefix}_result")
+    _rfa_gemini_ok = False
 
-    if _gemini_ready:
+    try:
+        import google.generativeai as _rfa_genai
+        from PIL import Image as _rfa_Image
+        _rfa_key = st.secrets.get("GEMINI_API_KEY", "")
+        if _rfa_key:
+            _rfa_genai.configure(api_key=_rfa_key)
+            _rfa_gemini_ok = True
+    except Exception:
+        pass
+
+    if _rfa_gemini_ok and _five_bytes:
         st.markdown('<div class="section-title">⚡ 盤中五檔即時勝率修正</div>',
                     unsafe_allow_html=True)
-        st.markdown(
-            '<div style="font-size:12px;color:#4a6fa5;margin-bottom:8px;">'
-            '上傳五檔委買委賣截圖，AI 即時辨識籌碼特徵，動態修正波浪 DNA 勝率。</div>',
-            unsafe_allow_html=True
-        )
 
-        # 🧑‍🔬 Agent B：Session State 防刷機制
-        # key 格式：_five_level_{ticker} — 換股票自動清空，同股不重複打 API
-        _ss_key   = f"_five_level_{used_ticker}"
-        _hash_key = f"_five_hash_{used_ticker}"
-        _bytes_key = f"_five_bytes_{used_ticker}"  # ★ 圖片 bytes 持久化
-        if _ss_key not in st.session_state:
-            st.session_state[_ss_key] = None
+        _col_a, _col_b = st.columns([3, 1])
+        with _col_a:
+            st.caption("已偵測到五檔截圖，按右側按鈕啟動 Gemini 解析")
+        with _col_b:
+            _do_analyze = st.button("🚀 快驗籌碼",
+                                    key=f"five_go_{used_ticker}",
+                                    type="primary",
+                                    use_container_width=True)
 
-        uploaded_five = st.file_uploader(
-            "📷 拖入五檔截圖",
-            type=["png", "jpg", "jpeg"],
-            label_visibility="collapsed",
-            key=f"five_uploader_{used_ticker}"
-        )
-
-        # ★ 修正根本問題：圖片 bytes 存入 session_state，rerun 後從快取重建
-        # file_uploader 在 Streamlit rerun 後會被清空，
-        # 把 bytes 另存後就能跨 rerun 保留，不再「跳回主畫面」
-        if uploaded_five is not None:
-            import hashlib as _hl
-            _raw_bytes = uploaded_five.read()
-            _img_hash  = _hl.md5(_raw_bytes).hexdigest()
-            _is_new_img = st.session_state.get(_hash_key) != _img_hash
-            if _is_new_img:
-                # 新圖片 → 存 bytes 到 session_state，清除舊分析結果
-                st.session_state[_bytes_key] = _raw_bytes
-                st.session_state[_hash_key]  = _img_hash
-                st.session_state[_ss_key]    = None   # 清舊結果，等待按鈕觸發
-
-        # 從 session_state 讀取持久化的圖片（rerun 後依然存在）
-        _cached_bytes = st.session_state.get(_bytes_key)
-
-        if _cached_bytes:
-            # 只有手動點擊按鈕才觸發 AI（移除自動觸發，避免無限 rerun）
-            if st.button("🚀 啟動五檔多維快驗",
-                         key=f"five_btn_{used_ticker}",
-                         use_container_width=True):
-                with st.spinner("⚡ AI 正在解析五檔籌碼..."):
-                    def _analyze_five_level(img_bytes: bytes) -> dict:
-                        _safe = {"chip_tag": "辨識失敗",
-                                 "score_modifier": 0,
-                                 "one_line_reason": "圖片模糊或解析錯誤"}
-                        try:
-                            import io as _io
-                            _model = _genai.GenerativeModel("gemini-1.5-flash")
-                            _img   = _Image.open(_io.BytesIO(img_bytes))
-                            _prompt = """
-你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
+        if _do_analyze:
+            with st.spinner("⚡ AI 正在解析五檔籌碼..."):
+                def _run_five_gemini(img_bytes: bytes) -> dict:
+                    _safe = {"chip_tag": "辨識失敗",
+                             "score_modifier": 0,
+                             "one_line_reason": "圖片模糊或解析錯誤"}
+                    try:
+                        import io as _io, re as _re, json as _json
+                        _model  = _rfa_genai.GenerativeModel("gemini-1.5-flash")
+                        _img    = _rfa_Image.open(_io.BytesIO(img_bytes))
+                        _prompt = """你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
 1. 主力低檔防守/大單吃貨 → +7
 2. 高檔壓盤洗盤/主力不急追 → +2
 3. 均勢/量縮散戶盤 → 0
 4. 買盤空虛/流動性陷阱/主力出貨 → -7
-嚴格只輸出以下 JSON 格式（不含 markdown 標籤或任何說明文字）：
-{"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明原因"}
-"""
-                            _resp  = _model.generate_content([_prompt, _img])
-                            _clean = re.sub(r'```json\s*|```', '',
-                                            _resp.text).strip()
-                            _result = json.loads(_clean)
-                            _result["score_modifier"] = max(-10,
-                                min(10, int(_result.get("score_modifier", 0))))
-                            return _result
-                        except Exception:
-                            return _safe
+嚴格只輸出 JSON（不含 markdown 標籤）：
+{"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明"}"""
+                        _resp   = _model.generate_content([_prompt, _img])
+                        _clean  = _re.sub(r'```json\s*|```', '',
+                                          _resp.text).strip()
+                        _res    = _json.loads(_clean)
+                        _res["score_modifier"] = max(-10,
+                            min(10, int(_res.get("score_modifier", 0))))
+                        return _res
+                    except Exception:
+                        return _safe
 
-                    st.session_state[_ss_key] = _analyze_five_level(_cached_bytes)
+                _five_result = _run_five_gemini(_five_bytes)
+                st.session_state[f"{_five_prefix}_result"] = _five_result
 
-            # ── 顯示分析結果（rerun 後從 session_state 取，不再依賴 file_uploader）
-            _res = st.session_state.get(_ss_key)
-            if _res:
-                # base_winrate 從本次計算結果取得（串接真實數值）
-                _base_wr    = round(wr["winrate"] * 100, 1)
-                _modifier   = _res["score_modifier"]
-                _final_wr   = round(_base_wr + _modifier, 1)
-                _wr_color   = "#1df27d" if _modifier >= 0 else "#ff4b4b"
-                _mod_sign   = "+" if _modifier >= 0 else ""
-                _chip_color = "#0a7c59" if _modifier > 0 else (
-                              "#c0392b" if _modifier < 0 else "#4a6fa5")
+        # ── 顯示結果（rerun 後從 session_state 讀，不閃退）────────────
+        if _five_result:
+            _base_wr  = round(wr["winrate"] * 100, 1)
+            _modifier = _five_result["score_modifier"]
+            _final_wr = round(_base_wr + _modifier, 1)
+            _wr_color = "#1df27d" if _modifier >= 0 else "#ff4b4b"
+            _mod_sign = "+" if _modifier >= 0 else ""
+            _chip_col = ("#0a7c59" if _modifier > 0
+                         else "#c0392b" if _modifier < 0 else "#4a6fa5")
 
-                st.markdown(f"""
-                <div style="background:#0d1117;border:1px solid {_wr_color}44;
-                            border-radius:12px;padding:16px 20px;margin:12px 0;">
-                  <div style="display:flex;align-items:center;
-                              justify-content:space-between;flex-wrap:wrap;gap:12px;">
-                    <div>
-                      <div style="font-size:12px;color:#7a9bbf;margin-bottom:4px;
-                                  font-family:'IBM Plex Mono',monospace;">
-                        🧬 波浪 DNA 最終勝率（含五檔修正）
-                      </div>
-                      <div style="display:flex;align-items:baseline;gap:8px;">
-                        <span style="font-family:'IBM Plex Mono',monospace;
-                                     font-size:50px;font-weight:700;
-                                     color:{_wr_color};line-height:1;">
-                          {_final_wr:.1f}%
-                        </span>
-                        <span style="font-size:16px;color:#7a9bbf;">
-                          ({_base_wr:.1f}% {_mod_sign}{_modifier}%)
-                        </span>
-                      </div>
-                    </div>
-                    <div style="text-align:right;">
-                      <div style="font-size:12px;color:#7a9bbf;margin-bottom:4px;
-                                  font-family:'IBM Plex Mono',monospace;">
-                        📊 籌碼特徵 / 修正分數
-                      </div>
-                      <div style="font-size:22px;font-weight:700;color:{_chip_color};">
-                        {_res['chip_tag']}
-                      </div>
-                      <div style="font-family:'IBM Plex Mono',monospace;
-                                  font-size:28px;font-weight:700;color:{_wr_color};">
-                        {_mod_sign}{_modifier}%
-                      </div>
-                    </div>
+            st.markdown(f"""
+            <div style="background:#0d1117;border:1px solid {_wr_color}44;
+                        border-radius:12px;padding:16px 20px;margin:12px 0;">
+              <div style="display:flex;align-items:center;
+                          justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                <div>
+                  <div style="font-size:11px;color:#7a9bbf;margin-bottom:4px;
+                              font-family:'IBM Plex Mono',monospace;">
+                    🧬 波浪 DNA 最終勝率（含五檔修正）
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:8px;">
+                    <span style="font-family:'IBM Plex Mono',monospace;
+                                 font-size:50px;font-weight:700;
+                                 color:{_wr_color};line-height:1;">
+                      {_final_wr:.1f}%
+                    </span>
+                    <span style="font-size:15px;color:#7a9bbf;">
+                      ({_base_wr:.1f}% {_mod_sign}{_modifier}%)
+                    </span>
                   </div>
                 </div>
-                """, unsafe_allow_html=True)
-
-                st.info(f"💡 **盤中現況短評**：{_res['one_line_reason']}")
+                <div style="text-align:right;">
+                  <div style="font-size:11px;color:#7a9bbf;margin-bottom:4px;
+                              font-family:'IBM Plex Mono',monospace;">
+                    📊 籌碼特徵 / 修正
+                  </div>
+                  <div style="font-size:20px;font-weight:700;color:{_chip_col};">
+                    {_five_result['chip_tag']}
+                  </div>
+                  <div style="font-family:'IBM Plex Mono',monospace;
+                              font-size:26px;font-weight:700;color:{_wr_color};">
+                    {_mod_sign}{_modifier}%
+                  </div>
+                </div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.info(f"💡 **盤中現況短評**：{_five_result['one_line_reason']}")
 
     # ══════════════════════════════════════════════════════════════════
-    # （五檔速驗模組結束）原有功能繼續 ↓
+    # 走勢圖（原有功能繼續）
     # ══════════════════════════════════════════════════════════════════
+    st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>',
+                unsafe_allow_html=True)
     chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
     st.line_chart(chart_df, use_container_width=True, height=200)
 
