@@ -5588,7 +5588,7 @@ def main():
                         _err_detail = ""
                         try:
                             import io as _io, re as _re, json as _json
-                            _model = _rfa_genai.GenerativeModel("gemini-1.5-flash")
+                            _model = _rfa_genai.GenerativeModel("gemini-2.0-flash")
                             _img   = _rfa_Image.open(_io.BytesIO(img_bytes))
 
                             # 🧑‍🔬 Agent B：強化 Prompt
