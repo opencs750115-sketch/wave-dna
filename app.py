@@ -5494,7 +5494,146 @@ def main():
 
     render_forward_table(rows, wr["close"])
 
-    st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>', unsafe_allow_html=True)
+    # ══════════════════════════════════════════════════════════════════
+    # ⚡ 盤中五檔即時勝率修正（Gemini Vision 速驗模組）
+    # ══════════════════════════════════════════════════════════════════
+    # 💻 Agent A：try-import 安全框架
+    # 只要 google-generativeai 或 Pillow 未安裝，整個模組靜默跳過，
+    # 絕不影響上方所有技術面/籌碼面功能。
+    # 🧑‍💼 Agent C：Gemini API key 不存在時同樣靜默跳過，不報錯。
+    _gemini_ready = False
+    try:
+        import google.generativeai as _genai
+        from PIL import Image as _Image
+        _gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        if _gemini_key:
+            _genai.configure(api_key=_gemini_key)
+            _gemini_ready = True
+    except Exception:
+        pass   # 套件未安裝或 secrets 未設定 → 整個模組不顯示
+
+    if _gemini_ready:
+        st.markdown('<div class="section-title">⚡ 盤中五檔即時勝率修正</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:12px;color:#4a6fa5;margin-bottom:8px;">'
+            '上傳五檔委買委賣截圖，AI 即時辨識籌碼特徵，動態修正波浪 DNA 勝率。</div>',
+            unsafe_allow_html=True
+        )
+
+        # 🧑‍🔬 Agent B：Session State 防刷機制
+        # key 格式：_five_level_{ticker} — 換股票自動清空，同股不重複打 API
+        _ss_key = f"_five_level_{used_ticker}"
+        if _ss_key not in st.session_state:
+            st.session_state[_ss_key] = None
+
+        uploaded_five = st.file_uploader(
+            "📷 拖入五檔截圖",
+            type=["png", "jpg", "jpeg"],
+            label_visibility="collapsed",
+            key=f"five_uploader_{used_ticker}"
+        )
+
+        if uploaded_five is not None:
+            # 圖片 hash 防重複打 API（同一張圖片不重複送）
+            import hashlib as _hl
+            _img_hash = _hl.md5(uploaded_five.read()).hexdigest()
+            uploaded_five.seek(0)   # 讀完後 seek 回頭
+            _hash_key = f"_five_hash_{used_ticker}"
+
+            # 只有新圖片或手動點擊才觸發 AI
+            _is_new_img = st.session_state.get(_hash_key) != _img_hash
+
+            if _is_new_img or st.button("🚀 啟動五檔多維快驗",
+                                         key=f"five_btn_{used_ticker}"):
+                with st.spinner("⚡ AI 正在解析五檔籌碼..."):
+                    # 🧑‍🔬 Agent B：Gemini 分析函式（內嵌，避免全域污染）
+                    def _analyze_five_level(img_file) -> dict:
+                        _safe = {"chip_tag": "辨識失敗",
+                                 "score_modifier": 0,
+                                 "one_line_reason": "圖片模糊或解析錯誤"}
+                        try:
+                            _model = _genai.GenerativeModel("gemini-1.5-flash")
+                            _img   = _Image.open(img_file)
+                            _prompt = """
+你現在是高頻交易系統的 OCR 籌碼解析模組。請辨識這張台股五檔截圖，依以下邏輯給分：
+1. 主力低檔防守/大單吃貨 → +7
+2. 高檔壓盤洗盤/主力不急追 → +2
+3. 均勢/量縮散戶盤 → 0
+4. 買盤空虛/流動性陷阱/主力出貨 → -7
+嚴格只輸出以下 JSON 格式（不含 markdown 標籤或任何說明文字）：
+{"chip_tag": "主力吃貨", "score_modifier": 7, "one_line_reason": "說明原因"}
+"""
+                            _resp = _model.generate_content([_prompt, _img])
+                            _clean = re.sub(r'```json\s*|```', '',
+                                            _resp.text).strip()
+                            _result = json.loads(_clean)
+                            # 防止 score_modifier 超出合理範圍
+                            _result["score_modifier"] = max(-10,
+                                min(10, int(_result.get("score_modifier", 0))))
+                            return _result
+                        except Exception:
+                            return _safe
+
+                    _result = _analyze_five_level(uploaded_five)
+                    st.session_state[_ss_key]   = _result
+                    st.session_state[_hash_key] = _img_hash
+
+            # ── 顯示分析結果 ─────────────────────────────────────────
+            _res = st.session_state[_ss_key]
+            if _res:
+                # base_winrate 從本次計算結果取得（串接真實數值）
+                _base_wr    = round(wr["winrate"] * 100, 1)
+                _modifier   = _res["score_modifier"]
+                _final_wr   = round(_base_wr + _modifier, 1)
+                _wr_color   = "#1df27d" if _modifier >= 0 else "#ff4b4b"
+                _mod_sign   = "+" if _modifier >= 0 else ""
+                _chip_color = "#0a7c59" if _modifier > 0 else (
+                              "#c0392b" if _modifier < 0 else "#4a6fa5")
+
+                st.markdown(f"""
+                <div style="background:#0d1117;border:1px solid {_wr_color}44;
+                            border-radius:12px;padding:16px 20px;margin:12px 0;">
+                  <div style="display:flex;align-items:center;
+                              justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                    <div>
+                      <div style="font-size:12px;color:#7a9bbf;margin-bottom:4px;
+                                  font-family:'IBM Plex Mono',monospace;">
+                        🧬 波浪 DNA 最終勝率（含五檔修正）
+                      </div>
+                      <div style="display:flex;align-items:baseline;gap:8px;">
+                        <span style="font-family:'IBM Plex Mono',monospace;
+                                     font-size:50px;font-weight:700;
+                                     color:{_wr_color};line-height:1;">
+                          {_final_wr:.1f}%
+                        </span>
+                        <span style="font-size:16px;color:#7a9bbf;">
+                          ({_base_wr:.1f}% {_mod_sign}{_modifier}%)
+                        </span>
+                      </div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="font-size:12px;color:#7a9bbf;margin-bottom:4px;
+                                  font-family:'IBM Plex Mono',monospace;">
+                        📊 籌碼特徵 / 修正分數
+                      </div>
+                      <div style="font-size:22px;font-weight:700;color:{_chip_color};">
+                        {_res['chip_tag']}
+                      </div>
+                      <div style="font-family:'IBM Plex Mono',monospace;
+                                  font-size:28px;font-weight:700;color:{_wr_color};">
+                        {_mod_sign}{_modifier}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.info(f"💡 **盤中現況短評**：{_res['one_line_reason']}")
+
+    # ══════════════════════════════════════════════════════════════════
+    # （五檔速驗模組結束）原有功能繼續 ↓
+    # ══════════════════════════════════════════════════════════════════
     chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
     st.line_chart(chart_df, use_container_width=True, height=200)
 
