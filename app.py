@@ -2099,7 +2099,7 @@ DEFAULT_WATCHLIST = [
 
 # ★ 全市場雷達永久保障底盤：無論成交量排行如何變動，這些代號永遠被掃描
 CORE_RADAR_WATCHLIST = [
-    '1609.TW', '3289.TW', '8074.TW', '8150.TW', '2317.TW',
+    '1609.TW', '3289.TWO', '8074.TWO', '8150.TW', '2317.TW',
 ]
 
 # 動態名稱快取(從 Ticker.info 動態查詢的結果，session 期間有效)
@@ -4474,7 +4474,7 @@ def render_dna_stats(dna: dict):
 
     if dna["corrections"]:
         corr_df = pd.DataFrame({"修正天數(天)": dna["corrections"]})
-        st.bar_chart(corr_df, use_container_width=True, height=110)
+        st.bar_chart(corr_df, height=110, width="stretch")
 
 
 def render_r_cycle(dna: dict, wr: dict, used_ticker: str):
@@ -5280,7 +5280,7 @@ def main():
                     render_forward_table(rows_fwd, wr_sel["close"])
 
                     chart_df = df_sel[["Close","MA5","MA20","MA60"]].tail(120).dropna(subset=["Close"])
-                    st.line_chart(chart_df, use_container_width=True, height=180)
+                    st.line_chart(chart_df, height=180, width="stretch")
 
         # ── 完整掃描結果(含低勝率,可折疊) ──────────────────────────
         with st.expander(f"📋 顯示全部 {len(results)} 檔掃描結果(含低勝率)"):
@@ -5709,7 +5709,7 @@ def main():
     st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>',
                 unsafe_allow_html=True)
     chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
-    st.line_chart(chart_df, use_container_width=True, height=200)
+    st.line_chart(chart_df, height=200, width="stretch")
 
     st.markdown(f"""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
