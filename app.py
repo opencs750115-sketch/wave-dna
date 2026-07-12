@@ -1886,6 +1886,73 @@ def get_stock_name(ticker: str) -> str:
     return re.sub(r'\.(TWO|TW)$', '', ticker, flags=re.IGNORECASE)
 
 
+def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
+    """
+    ★ 純 HTML SVG 折線圖（替代 st.line_chart）
+    完全不依賴 altair，避免 Python 3.14 + altair 崩潰（Segfault / TypeError）。
+    支援 Close / MA5 / MA20 / MA60 四條線，自動縮放 Y 軸。
+    """
+    import json as _json
+
+    _cols   = [c for c in ["Close", "MA5", "MA20", "MA60"] if c in df.columns]
+    _colors = {"Close": "#2196f3", "MA5": "#f44336",
+               "MA20": "#4caf50", "MA60": "#ff9800"}
+    _df     = df[_cols].dropna(subset=["Close"]).reset_index(drop=True)
+    if _df.empty:
+        return
+
+    W, H = 700, height
+    pad  = {"t": 10, "b": 30, "l": 45, "r": 10}
+    cw   = W - pad["l"] - pad["r"]
+    ch   = H - pad["t"] - pad["b"]
+    n    = len(_df)
+
+    # Y 軸範圍
+    _all_vals = [v for c in _cols for v in _df[c].dropna().tolist()]
+    y_min, y_max = min(_all_vals), max(_all_vals)
+    y_pad = (y_max - y_min) * 0.05 or 1
+    y_min -= y_pad; y_max += y_pad
+
+    def _sx(i):    return pad["l"] + (i / max(n-1, 1)) * cw
+    def _sy(v):    return pad["t"] + ch - ((v - y_min) / (y_max - y_min)) * ch
+
+    # 折線
+    _lines_svg = ""
+    for col in _cols:
+        pts = [(i, row[col]) for i, row in _df.iterrows()
+               if pd.notna(row[col])]
+        if len(pts) < 2:
+            continue
+        _d = " ".join(f"{'M' if j==0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
+                      for j, (i, v) in enumerate(pts))
+        _lines_svg += (f'<path d="{_d}" stroke="{_colors.get(col,"#aaa")}" '
+                       f'stroke-width="1.5" fill="none" opacity="0.9"/>')
+
+    # Y 軸刻度（5條）
+    _yticks = ""
+    for k in range(5):
+        yv  = y_min + (y_max - y_min) * k / 4
+        yp  = _sy(yv)
+        _yticks += (f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" y1="{yp:.1f}" '
+                    f'y2="{yp:.1f}" stroke="#1e3a5f" stroke-width="0.5"/>'
+                    f'<text x="{pad["l"]-4}" y="{yp+4:.1f}" text-anchor="end" '
+                    f'font-size="9" fill="#7a9bbf">{yv:.1f}</text>')
+
+    # 圖例
+    _legend = ""
+    for j, col in enumerate(_cols):
+        _legend += (f'<rect x="{10+j*85}" y="{H-18}" width="10" height="3" '
+                    f'fill="{_colors.get(col,"#aaa")}"/>'
+                    f'<text x="{22+j*85}" y="{H-13}" font-size="9" '
+                    f'fill="{_colors.get(col,"#aaa")}">{col}</text>')
+
+    svg = (f'<svg width="100%" viewBox="0 0 {W} {H}" '
+           f'xmlns="http://www.w3.org/2000/svg" '
+           f'style="background:#0d1117;border-radius:6px">'
+           f'{_yticks}{_lines_svg}{_legend}</svg>')
+    st.markdown(svg, unsafe_allow_html=True)
+
+
 def get_chart_url(ticker: str) -> str:
     """
     生成 Yahoo Finance 台股技術分析頁面 URL。
@@ -4474,7 +4541,24 @@ def render_dna_stats(dna: dict):
 
     if dna["corrections"]:
         corr_df = pd.DataFrame({"修正天數(天)": dna["corrections"]})
-        st.bar_chart(corr_df, height=110, width="stretch")
+        # ★ 改用純 HTML SVG：完全不依賴 altair，避免 Python 3.14 崩潰
+        _vals   = corr_df["修正天數(天)"].tolist()
+        _max_v  = max(_vals) if _vals else 1
+        _bar_w  = max(8, min(32, int(360 / max(len(_vals), 1))))
+        _bars   = "".join(
+            f'<rect x="{i*(_bar_w+2)}" y="{100-int(v/_max_v*90)}" '
+            f'width="{_bar_w}" height="{int(v/_max_v*90)}" '
+            f'fill="#4a6fa5" rx="2"/>'
+            f'<text x="{i*(_bar_w+2)+_bar_w//2}" y="112" '
+            f'text-anchor="middle" font-size="8" fill="#7a9bbf">{int(v)}</text>'
+            for i, v in enumerate(_vals)
+        )
+        _total_w = len(_vals) * (_bar_w + 2) + 10
+        st.markdown(
+            f'<svg width="{_total_w}" height="120" '
+            f'style="overflow:visible;margin:4px 0">{_bars}</svg>',
+            unsafe_allow_html=True
+        )
 
 
 def render_r_cycle(dna: dict, wr: dict, used_ticker: str):
@@ -5280,7 +5364,7 @@ def main():
                     render_forward_table(rows_fwd, wr_sel["close"])
 
                     chart_df = df_sel[["Close","MA5","MA20","MA60"]].tail(120).dropna(subset=["Close"])
-                    st.line_chart(chart_df, height=180, width="stretch")
+                    _render_line_chart_html(chart_df, height=180)
 
         # ── 完整掃描結果(含低勝率,可折疊) ──────────────────────────
         with st.expander(f"📋 顯示全部 {len(results)} 檔掃描結果(含低勝率)"):
@@ -5709,7 +5793,7 @@ def main():
     st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>',
                 unsafe_allow_html=True)
     chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
-    st.line_chart(chart_df, height=200, width="stretch")
+    _render_line_chart_html(chart_df, height=200)
 
     st.markdown(f"""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7a9bbf;
