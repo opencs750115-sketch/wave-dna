@@ -1902,68 +1902,186 @@ def get_stock_name(ticker: str) -> str:
 
 def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
     """
-    ★ 純 HTML SVG 折線圖（替代 st.line_chart）
-    完全不依賴 altair，避免 Python 3.14 + altair 崩潰（Segfault / TypeError）。
-    支援 Close / MA5 / MA20 / MA60 四條線，自動縮放 Y 軸。
+    ★ 純 HTML SVG 走勢圖（含布林通道）
+    支援：Close / MA5 / MA20 / MA60 折線 + 布林上下軌填色帶
+    新增：±2.1% 警示線（超買/超賣極值區）
+    完全不依賴 altair/plotly，純 SVG，支援 Python 3.14。
     """
-    import json as _json
 
-    _cols   = [c for c in ["Close", "MA5", "MA20", "MA60"] if c in df.columns]
-    _colors = {"Close": "#2196f3", "MA5": "#f44336",
-               "MA20": "#4caf50", "MA60": "#ff9800"}
-    _df     = df[_cols].dropna(subset=["Close"]).reset_index(drop=True)
+    _cols_line = [c for c in ["Close", "MA5", "MA20", "MA60"] if c in df.columns]
+    _colors    = {"Close": "#2196f3", "MA5": "#f44336",
+                  "MA20": "#4caf50",  "MA60": "#ff9800"}
+    _has_bb    = "BB_upper" in df.columns and "BB_lower" in df.columns
+
+    # 只取有 Close 的列
+    _base_cols = _cols_line + (["BB_upper", "BB_lower"] if _has_bb else [])
+    _df = df[[c for c in _base_cols if c in df.columns]].dropna(subset=["Close"]).reset_index(drop=True)
     if _df.empty:
         return
 
-    W, H = 700, height
-    pad  = {"t": 10, "b": 30, "l": 45, "r": 10}
-    cw   = W - pad["l"] - pad["r"]
-    ch   = H - pad["t"] - pad["b"]
-    n    = len(_df)
+    # 最新 %B 和帶寬
+    _latest_pct_b = float(df["PCT_B"].iloc[-1])     if "PCT_B"    in df.columns else None
+    _latest_bw    = float(df["BB_WIDTH"].iloc[-1])  if "BB_WIDTH" in df.columns else None
 
-    # Y 軸範圍
-    _all_vals = [v for c in _cols for v in _df[c].dropna().tolist()]
+    W, H   = 700, height
+    pad    = {"t": 12, "b": 38, "l": 48, "r": 10}
+    cw     = W - pad["l"] - pad["r"]
+    ch     = H - pad["t"] - pad["b"]
+    n      = len(_df)
+
+    # Y 軸範圍（包含布林帶）
+    _all_vals = [v for c in _cols_line for v in _df[c].dropna().tolist()]
+    if _has_bb:
+        _all_vals += _df["BB_upper"].dropna().tolist()
+        _all_vals += _df["BB_lower"].dropna().tolist()
     y_min, y_max = min(_all_vals), max(_all_vals)
     y_pad = (y_max - y_min) * 0.05 or 1
-    y_min -= y_pad; y_max += y_pad
+    y_min -= y_pad;  y_max += y_pad
 
-    def _sx(i):    return pad["l"] + (i / max(n-1, 1)) * cw
-    def _sy(v):    return pad["t"] + ch - ((v - y_min) / (y_max - y_min)) * ch
+    def _sx(i): return pad["l"] + (i / max(n - 1, 1)) * cw
+    def _sy(v): return pad["t"] + ch - ((v - y_min) / (y_max - y_min)) * ch
 
-    # 折線
-    _lines_svg = ""
-    for col in _cols:
-        pts = [(i, row[col]) for i, row in _df.iterrows()
-               if pd.notna(row[col])]
+    svg_parts = []
+
+    # ── 布林帶填色（半透明淡藍帶）────────────────────────────────────
+    if _has_bb:
+        _bu = _df["BB_upper"].tolist()
+        _bl = _df["BB_lower"].tolist()
+
+        # 上軌路徑（左→右）
+        _up_pts = [(i, v) for i, v in enumerate(_bu) if pd.notna(v)]
+        # 下軌路徑（右→左，形成封閉多邊形）
+        _lo_pts = [(i, v) for i, v in enumerate(_bl) if pd.notna(v)]
+
+        if len(_up_pts) >= 2 and len(_lo_pts) >= 2:
+            _band_d = (
+                "M" + f"{_sx(_up_pts[0][0]):.1f},{_sy(_up_pts[0][1]):.1f} "
+                + " ".join(f"L{_sx(i):.1f},{_sy(v):.1f}" for i, v in _up_pts[1:])
+                + " "
+                + " ".join(f"L{_sx(i):.1f},{_sy(v):.1f}" for i, v in reversed(_lo_pts))
+                + " Z"
+            )
+            svg_parts.append(
+                f'<path d="{_band_d}" fill="#1565c0" opacity="0.08"/>'
+            )
+
+        # 布林上軌線（虛線）
+        if len(_up_pts) >= 2:
+            _d_up = " ".join(
+                f"{'M' if j == 0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
+                for j, (i, v) in enumerate(_up_pts)
+            )
+            svg_parts.append(
+                f'<path d="{_d_up}" stroke="#5c9bd6" stroke-width="1" '
+                f'stroke-dasharray="4,3" fill="none" opacity="0.7"/>'
+            )
+
+        # 布林下軌線（虛線）
+        if len(_lo_pts) >= 2:
+            _d_lo = " ".join(
+                f"{'M' if j == 0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
+                for j, (i, v) in enumerate(_lo_pts)
+            )
+            svg_parts.append(
+                f'<path d="{_d_lo}" stroke="#5c9bd6" stroke-width="1" '
+                f'stroke-dasharray="4,3" fill="none" opacity="0.7"/>'
+            )
+
+        # ── ★ ±2.1% 警示線（超買/超賣極值，在布林帶以外）────────────
+        # 邏輯：MA20 × (1 ± 0.021) 作為價格極值警示
+        _ma20_vals = _df["MA20"].dropna()
+        if len(_ma20_vals) > 0:
+            _last_ma20 = float(_ma20_vals.iloc[-1])
+            _warn_up   = _last_ma20 * 1.021
+            _warn_lo   = _last_ma20 * 0.979
+
+            # 只在圖表 Y 軸範圍內才畫
+            if y_min < _warn_up < y_max:
+                _wyp = _sy(_warn_up)
+                svg_parts.append(
+                    f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" '
+                    f'y1="{_wyp:.1f}" y2="{_wyp:.1f}" '
+                    f'stroke="#c0392b" stroke-width="0.8" stroke-dasharray="6,4" opacity="0.55"/>'
+                    f'<text x="{W-pad["r"]+2}" y="{_wyp+4:.1f}" '
+                    f'font-size="8" fill="#c0392b" opacity="0.8">+2.1%</text>'
+                )
+            if y_min < _warn_lo < y_max:
+                _wlp = _sy(_warn_lo)
+                svg_parts.append(
+                    f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" '
+                    f'y1="{_wlp:.1f}" y2="{_wlp:.1f}" '
+                    f'stroke="#0a7c59" stroke-width="0.8" stroke-dasharray="6,4" opacity="0.55"/>'
+                    f'<text x="{W-pad["r"]+2}" y="{_wlp+4:.1f}" '
+                    f'font-size="8" fill="#0a7c59" opacity="0.8">-2.1%</text>'
+                )
+
+    # ── Y 軸刻度 ────────────────────────────────────────────────────
+    for k in range(5):
+        yv = y_min + (y_max - y_min) * k / 4
+        yp = _sy(yv)
+        svg_parts.append(
+            f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" y1="{yp:.1f}" y2="{yp:.1f}" '
+            f'stroke="#1e3a5f" stroke-width="0.5"/>'
+            f'<text x="{pad["l"]-4}" y="{yp+4:.1f}" text-anchor="end" '
+            f'font-size="9" fill="#7a9bbf">{yv:.1f}</text>'
+        )
+
+    # ── 主折線（Close / MA5 / MA20 / MA60）────────────────────────
+    for col in _cols_line:
+        pts = [(i, row[col]) for i, row in _df.iterrows() if pd.notna(row.get(col))]
         if len(pts) < 2:
             continue
-        _d = " ".join(f"{'M' if j==0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
-                      for j, (i, v) in enumerate(pts))
-        _lines_svg += (f'<path d="{_d}" stroke="{_colors.get(col,"#aaa")}" '
-                       f'stroke-width="1.5" fill="none" opacity="0.9"/>')
+        _d = " ".join(
+            f"{'M' if j == 0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
+            for j, (i, v) in enumerate(pts)
+        )
+        _w = "2" if col == "Close" else "1.5"
+        svg_parts.append(
+            f'<path d="{_d}" stroke="{_colors.get(col, "#aaa")}" '
+            f'stroke-width="{_w}" fill="none" opacity="0.95"/>'
+        )
 
-    # Y 軸刻度（5條）
-    _yticks = ""
-    for k in range(5):
-        yv  = y_min + (y_max - y_min) * k / 4
-        yp  = _sy(yv)
-        _yticks += (f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" y1="{yp:.1f}" '
-                    f'y2="{yp:.1f}" stroke="#1e3a5f" stroke-width="0.5"/>'
-                    f'<text x="{pad["l"]-4}" y="{yp+4:.1f}" text-anchor="end" '
-                    f'font-size="9" fill="#7a9bbf">{yv:.1f}</text>')
+    # ── 圖例（下方）────────────────────────────────────────────────
+    _legend_items = list(_cols_line)
+    if _has_bb:
+        _legend_items.append("BB")
+    _lx = 8
+    for col in _legend_items:
+        if col == "BB":
+            svg_parts.append(
+                f'<rect x="{_lx}" y="{H-18}" width="10" height="6" '
+                f'fill="#1565c0" opacity="0.25" rx="1"/>'
+                f'<line x1="{_lx}" x2="{_lx+10}" y1="{H-15}" y2="{H-15}" '
+                f'stroke="#5c9bd6" stroke-width="1" stroke-dasharray="3,2"/>'
+                f'<text x="{_lx+13}" y="{H-11}" font-size="8.5" fill="#5c9bd6">布林帶</text>'
+            )
+            _lx += 58
+        else:
+            svg_parts.append(
+                f'<rect x="{_lx}" y="{H-17}" width="10" height="3" '
+                f'fill="{_colors.get(col, "#aaa")}"/>'
+                f'<text x="{_lx+13}" y="{H-11}" font-size="8.5" '
+                f'fill="{_colors.get(col, "#aaa")}">{col}</text>'
+            )
+            _lx += 55
 
-    # 圖例
-    _legend = ""
-    for j, col in enumerate(_cols):
-        _legend += (f'<rect x="{10+j*85}" y="{H-18}" width="10" height="3" '
-                    f'fill="{_colors.get(col,"#aaa")}"/>'
-                    f'<text x="{22+j*85}" y="{H-13}" font-size="9" '
-                    f'fill="{_colors.get(col,"#aaa")}">{col}</text>')
+    # ── %B 和帶寬資訊（右下角）────────────────────────────────────
+    if _latest_pct_b is not None:
+        _pb_col = ("#0a7c59" if _latest_pct_b < 0.4 else
+                   "#d97706" if _latest_pct_b < 0.7 else "#c0392b")
+        _bw_str = f" BW:{_latest_bw:.1f}%" if _latest_bw is not None else ""
+        svg_parts.append(
+            f'<text x="{W-pad["r"]-2}" y="{H-20}" text-anchor="end" '
+            f'font-size="9" fill="{_pb_col}" font-weight="bold">'
+            f'%B:{_latest_pct_b:.2f}{_bw_str}</text>'
+        )
 
-    svg = (f'<svg width="100%" viewBox="0 0 {W} {H}" '
-           f'xmlns="http://www.w3.org/2000/svg" '
-           f'style="background:#0d1117;border-radius:6px">'
-           f'{_yticks}{_lines_svg}{_legend}</svg>')
+    svg = (
+        f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" '
+        f'style="background:#0d1117;border-radius:6px;">'
+        + "".join(svg_parts)
+        + "</svg>"
+    )
     st.markdown(svg, unsafe_allow_html=True)
 
 
@@ -5400,7 +5518,8 @@ def main():
                     rows_fwd = generate_forward_matrix(df_sel, wr_sel, dna_sel, n_days=top_n)
                     render_forward_table(rows_fwd, wr_sel["close"])
 
-                    chart_df = df_sel[["Close","MA5","MA20","MA60"]].tail(120).dropna(subset=["Close"])
+                    _bb_cols  = [c for c in ["BB_upper","BB_lower","MA20","PCT_B","BB_WIDTH"] if c in df_sel.columns]
+                    chart_df  = df_sel[["Close","MA5","MA20","MA60"] + _bb_cols].tail(120).dropna(subset=["Close"])
                     _render_line_chart_html(chart_df, height=180)
 
         # ── 完整掃描結果(含低勝率,可折疊) ──────────────────────────
@@ -5947,7 +6066,8 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>',
                 unsafe_allow_html=True)
-    chart_df = df[["Close", "MA5", "MA20", "MA60"]].tail(120).dropna(subset=["Close"])
+    _bb_cols = [c for c in ["BB_upper","BB_lower","MA20","PCT_B","BB_WIDTH"] if c in df.columns]
+    chart_df = df[["Close", "MA5", "MA20", "MA60"] + _bb_cols].tail(120).dropna(subset=["Close"])
     _render_line_chart_html(chart_df, height=200)
 
     st.markdown(f"""
