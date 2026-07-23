@@ -688,10 +688,10 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["VolMA5"] = df["Volume"].rolling(5).mean()
 
     # ── Agent A 新增：布林通道 + %B + 帶寬 ──────────────────────────
-    # 標準布林帶（20日，2σ）：純 pandas，零額外套件
+    # 標準布林帶（20日，2.1σ）：與 XQ 全球贏家預設參數一致
     _std20       = df["Close"].rolling(20).std()
-    df["BB_upper"] = df["MA20"] + 2 * _std20
-    df["BB_lower"] = df["MA20"] - 2 * _std20
+    df["BB_upper"] = df["MA20"] + 2.1 * _std20
+    df["BB_lower"] = df["MA20"] - 2.1 * _std20
     # 布林%B：0.0 = 下軌，0.5 = 中軌，1.0 = 上軌，>1 突破上軌
     _band_range     = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
     df["PCT_B"]     = (df["Close"] - df["BB_lower"]) / _band_range
@@ -1968,7 +1968,7 @@ def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
                 f'<path d="{_band_d}" fill="#1565c0" opacity="0.08"/>'
             )
 
-        # 布林上軌線（虛線）
+        # 布林上軌線（虛線）+ 標示 +2.1σ
         if len(_up_pts) >= 2:
             _d_up = " ".join(
                 f"{'M' if j == 0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
@@ -1978,8 +1978,16 @@ def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
                 f'<path d="{_d_up}" stroke="#5c9bd6" stroke-width="1" '
                 f'stroke-dasharray="4,3" fill="none" opacity="0.7"/>'
             )
+            # 右側標示
+            _last_up_x = _sx(_up_pts[-1][0])
+            _last_up_y = _sy(_up_pts[-1][1])
+            if _last_up_y > pad["t"] + 8:
+                svg_parts.append(
+                    f'<text x="{W-pad["r"]+2}" y="{_last_up_y+4:.1f}" '
+                    f'font-size="8" fill="#5c9bd6" opacity="0.85">+2.1σ</text>'
+                )
 
-        # 布林下軌線（虛線）
+        # 布林下軌線（虛線）+ 標示 -2.1σ
         if len(_lo_pts) >= 2:
             _d_lo = " ".join(
                 f"{'M' if j == 0 else 'L'}{_sx(i):.1f},{_sy(v):.1f}"
@@ -1989,33 +1997,11 @@ def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
                 f'<path d="{_d_lo}" stroke="#5c9bd6" stroke-width="1" '
                 f'stroke-dasharray="4,3" fill="none" opacity="0.7"/>'
             )
-
-        # ── ★ ±2.1% 警示線（超買/超賣極值，在布林帶以外）────────────
-        # 邏輯：MA20 × (1 ± 0.021) 作為價格極值警示
-        _ma20_vals = _df["MA20"].dropna()
-        if len(_ma20_vals) > 0:
-            _last_ma20 = float(_ma20_vals.iloc[-1])
-            _warn_up   = _last_ma20 * 1.021
-            _warn_lo   = _last_ma20 * 0.979
-
-            # 只在圖表 Y 軸範圍內才畫
-            if y_min < _warn_up < y_max:
-                _wyp = _sy(_warn_up)
+            _last_lo_y = _sy(_lo_pts[-1][1])
+            if _last_lo_y < H - pad["b"] - 8:
                 svg_parts.append(
-                    f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" '
-                    f'y1="{_wyp:.1f}" y2="{_wyp:.1f}" '
-                    f'stroke="#c0392b" stroke-width="0.8" stroke-dasharray="6,4" opacity="0.55"/>'
-                    f'<text x="{W-pad["r"]+2}" y="{_wyp+4:.1f}" '
-                    f'font-size="8" fill="#c0392b" opacity="0.8">+2.1%</text>'
-                )
-            if y_min < _warn_lo < y_max:
-                _wlp = _sy(_warn_lo)
-                svg_parts.append(
-                    f'<line x1="{pad["l"]}" x2="{W-pad["r"]}" '
-                    f'y1="{_wlp:.1f}" y2="{_wlp:.1f}" '
-                    f'stroke="#0a7c59" stroke-width="0.8" stroke-dasharray="6,4" opacity="0.55"/>'
-                    f'<text x="{W-pad["r"]+2}" y="{_wlp+4:.1f}" '
-                    f'font-size="8" fill="#0a7c59" opacity="0.8">-2.1%</text>'
+                    f'<text x="{W-pad["r"]+2}" y="{_last_lo_y+4:.1f}" '
+                    f'font-size="8" fill="#5c9bd6" opacity="0.85">-2.1σ</text>'
                 )
 
     # ── Y 軸刻度 ────────────────────────────────────────────────────
