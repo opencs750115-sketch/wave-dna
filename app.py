@@ -1913,8 +1913,11 @@ def _render_line_chart_html(df: "pd.DataFrame", height: int = 200) -> None:
                   "MA20": "#4caf50",  "MA60": "#ff9800"}
     _has_bb    = "BB_upper" in df.columns and "BB_lower" in df.columns
 
-    # 只取有 Close 的列
-    _base_cols = _cols_line + (["BB_upper", "BB_lower"] if _has_bb else [])
+    # ★ 去重複：避免欄位名稱重複時 pandas 回傳 DataFrame 而非 Series（AttributeError）
+    _base_cols = list(dict.fromkeys(
+        _cols_line + (["BB_upper", "BB_lower"] if _has_bb else [])
+        + ([c for c in ["PCT_B","BB_WIDTH"] if c in df.columns])
+    ))
     _df = df[[c for c in _base_cols if c in df.columns]].dropna(subset=["Close"]).reset_index(drop=True)
     if _df.empty:
         return
@@ -5518,8 +5521,9 @@ def main():
                     rows_fwd = generate_forward_matrix(df_sel, wr_sel, dna_sel, n_days=top_n)
                     render_forward_table(rows_fwd, wr_sel["close"])
 
-                    _bb_cols  = [c for c in ["BB_upper","BB_lower","MA20","PCT_B","BB_WIDTH"] if c in df_sel.columns]
-                    chart_df  = df_sel[["Close","MA5","MA20","MA60"] + _bb_cols].tail(120).dropna(subset=["Close"])
+                    _bb_cols  = [c for c in ["BB_upper","BB_lower","PCT_B","BB_WIDTH"] if c in df_sel.columns]
+                    _all_cols = list(dict.fromkeys(["Close","MA5","MA20","MA60"] + _bb_cols))  # 去重複保順序
+                    chart_df  = df_sel[_all_cols].tail(120).dropna(subset=["Close"])
                     _render_line_chart_html(chart_df, height=180)
 
         # ── 完整掃描結果(含低勝率,可折疊) ──────────────────────────
@@ -6066,8 +6070,9 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     st.markdown('<div class="section-title">📈 近期走勢 (收盤價)</div>',
                 unsafe_allow_html=True)
-    _bb_cols = [c for c in ["BB_upper","BB_lower","MA20","PCT_B","BB_WIDTH"] if c in df.columns]
-    chart_df = df[["Close", "MA5", "MA20", "MA60"] + _bb_cols].tail(120).dropna(subset=["Close"])
+    _bb_cols = [c for c in ["BB_upper","BB_lower","PCT_B","BB_WIDTH"] if c in df.columns]
+    _all_cols = list(dict.fromkeys(["Close", "MA5", "MA20", "MA60"] + _bb_cols))  # 去重複保順序
+    chart_df = df[_all_cols].tail(120).dropna(subset=["Close"])
     _render_line_chart_html(chart_df, height=200)
 
     st.markdown(f"""
