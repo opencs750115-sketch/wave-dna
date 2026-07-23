@@ -2726,6 +2726,9 @@ def _scan_one(ticker: str, period: str) -> dict | None:
                 "買點訊號":   entry["signal"],
                 "KD拐頭":     entry["kd_stage"],
                 "買點條件":   entry["conditions"],
+                # ── ★ 布林%B 進場位置 ─────────────────────────────
+                "PCT_B":      round(float(df["PCT_B"].iloc[-1]), 3) if "PCT_B" in df.columns and not pd.isna(df["PCT_B"].iloc[-1]) else None,
+                "BB_WIDTH":   round(float(df["BB_WIDTH"].iloc[-1]), 1) if "BB_WIDTH" in df.columns and not pd.isna(df["BB_WIDTH"].iloc[-1]) else None,
             }
         except Exception as e:
             err_str = str(e).lower()
@@ -3249,6 +3252,9 @@ def _wl_scan_one(ticker: str, period: str, _bucket: str = "") -> dict | None:
             "D1下限":      d1_low,
             "D2下限":      d2_low,
             "chart_url":   get_chart_url(used),
+            # 布林%B（進場位置評估）
+            "PCT_B":       round(float(df["PCT_B"].iloc[-1]), 3) if "PCT_B" in df.columns and not pd.isna(df["PCT_B"].iloc[-1]) else None,
+            "BB_WIDTH":    round(float(df["BB_WIDTH"].iloc[-1]), 1) if "BB_WIDTH" in df.columns and not pd.isna(df["BB_WIDTH"].iloc[-1]) else None,
         }
 
         try:
@@ -3775,6 +3781,22 @@ def _render_wl_scan_table(results: list):
           <td>{cat_badge}</td>
           <td style="color:{rc_color};font-weight:700;font-size:12px;
                      font-family:'IBM Plex Mono',monospace;">{rc:.3f}</td>
+          <td style="text-align:center;">
+            {(lambda pb: (
+                f'<span style="font-family:IBM Plex Mono,monospace;font-size:12px;'
+                f'font-weight:700;color:#0a7c59;">{pb:.2f}</span>'
+                f'<div style="font-size:9px;color:#0a7c59;">佳</div>'
+            ) if pb is not None and pb < 0.4 else (
+                f'<span style="font-family:IBM Plex Mono,monospace;font-size:12px;'
+                f'font-weight:700;color:#4a6fa5;">{pb:.2f}</span>'
+                f'<div style="font-size:9px;color:#4a6fa5;">中</div>'
+            ) if pb is not None and pb < 0.7 else (
+                f'<span style="font-family:IBM Plex Mono,monospace;font-size:12px;'
+                f'font-weight:700;color:#c0392b;">{pb:.2f}</span>'
+                f'<div style="font-size:9px;color:#c0392b;">偏高</div>'
+            ) if pb is not None else '<span style="color:#9e9e9e;font-size:11px;">--</span>'
+            )(r.get("PCT_B"))}
+          </td>
           <td>
             <button onclick="openEntryDetail('{entry_html}')"
               style="background:{sc_color};color:#fff;border:none;border-radius:6px;
@@ -3821,6 +3843,7 @@ def _render_wl_scan_table(results: list):
           <th style="padding:8px;text-align:left;min-width:90px;">波段勝率</th>
           <th style="padding:8px;text-align:left;min-width:60px;">分類</th>
           <th style="padding:8px;text-align:left;min-width:65px;">R_cycle</th>
+          <th style="padding:8px;text-align:center;min-width:65px;">📊%B</th>
           <th style="padding:8px;text-align:left;min-width:95px;">🎯買點評估</th>
           <th style="padding:8px;text-align:left;min-width:80px;">🧬籌碼動態</th>
           <th style="padding:8px;text-align:left;min-width:95px;">法人動向(3日)</th>
