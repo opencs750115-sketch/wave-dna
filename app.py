@@ -658,6 +658,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
       K9 / D9                     隨機指標(9日RSV,1/3平滑)
       ATR14                       平均真實波動幅度(14日)
       VolMA5                      5日均量
+      BB_upper / BB_lower         布林通道上下軌（20日，2σ）
+      PCT_B                       布林%B（0=下軌，0.5=中軌，1=上軌）
+      BB_WIDTH                    布林帶寬（%，越窄越可能爆發）
     """
     df = df.copy()
 
@@ -683,6 +686,17 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # 成交量均量
     df["VolMA5"] = df["Volume"].rolling(5).mean()
+
+    # ── Agent A 新增：布林通道 + %B + 帶寬 ──────────────────────────
+    # 標準布林帶（20日，2σ）：純 pandas，零額外套件
+    _std20       = df["Close"].rolling(20).std()
+    df["BB_upper"] = df["MA20"] + 2 * _std20
+    df["BB_lower"] = df["MA20"] - 2 * _std20
+    # 布林%B：0.0 = 下軌，0.5 = 中軌，1.0 = 上軌，>1 突破上軌
+    _band_range     = (df["BB_upper"] - df["BB_lower"]).replace(0, np.nan)
+    df["PCT_B"]     = (df["Close"] - df["BB_lower"]) / _band_range
+    # 布林帶寬（%）：帶寬壓縮 = 即將爆發，帶寬擴張 = 趨勢延伸中
+    df["BB_WIDTH"]  = (_band_range / df["MA20"] * 100).round(2)
 
     return df
 
@@ -5546,6 +5560,124 @@ def main():
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Agent B：布林%B 進場位置儀表板 ──────────────────────────────────
+    # 不影響現有評分，純資訊顯示，讓使用者自行判斷進場時機
+    _pct_b_val  = float(df["PCT_B"].iloc[-1])   if "PCT_B"    in df.columns else None
+    _bb_width   = float(df["BB_WIDTH"].iloc[-1]) if "BB_WIDTH" in df.columns else None
+    _bb_up      = float(df["BB_upper"].iloc[-1]) if "BB_upper" in df.columns else None
+    _bb_lo      = float(df["BB_lower"].iloc[-1]) if "BB_lower" in df.columns else None
+    _bb_mid     = float(df["MA20"].iloc[-1])     if "MA20"     in df.columns else None
+
+    if _pct_b_val is not None:
+        # 位置評級與建議
+        _pb = _pct_b_val
+        if _pb < 0.2:
+            _pb_grade = "🟢 超賣區"
+            _pb_color = "#0a7c59"
+            _pb_bg    = "#e8f4ec"
+            _pb_advice = f"低位佈局良機，上方空間大（距上軌 {(_bb_up - df['Close'].iloc[-1]):.2f} 元）"
+            _pb_pos_label = "最佳進場區"
+        elif _pb < 0.4:
+            _pb_grade = "✅ 低位區"
+            _pb_color = "#1565c0"
+            _pb_bg    = "#eaf2fb"
+            _pb_advice = f"進場位置理想，風險收益比佳（距中軌 {(_bb_mid - df['Close'].iloc[-1]):.2f} 元）"
+            _pb_pos_label = "建議進場"
+        elif _pb < 0.6:
+            _pb_grade = "⚪ 中立區"
+            _pb_color = "#4a6fa5"
+            _pb_bg    = "#f0f3f7"
+            _pb_advice = f"位置中性，可進場但需嚴守停損（中軌 {_bb_mid:.2f} 元）"
+            _pb_pos_label = "可進場觀察"
+        elif _pb < 0.8:
+            _pb_grade = "⚠️ 偏高區"
+            _pb_color = "#d97706"
+            _pb_bg    = "#fef3c7"
+            _pb_advice = f"追高風險偏大，建議等回落 %B < 0.5 再進，或縮倉至 50%"
+            _pb_pos_label = "謹慎追高"
+        else:
+            _pb_grade = "🔴 超買區"
+            _pb_color = "#c0392b"
+            _pb_bg    = "#fde8e8"
+            _pb_advice = f"接近/突破上軌（{_bb_up:.2f} 元），強勢股續強或超買回落，需配合量能判斷"
+            _pb_pos_label = "等待回測"
+
+        # %B 視覺進度條（0 到 1 的滑尺）
+        _bar_pct   = min(max(_pb, 0), 1.2) / 1.2 * 100   # 最多顯示到 120%
+        _bar_color = _pb_color
+
+        # 帶寬狀態
+        if _bb_width is not None:
+            if _bb_width < 8:
+                _bw_label = f"🔵 擠壓收斂（{_bb_width:.1f}%）→ 即將爆發方向選擇"
+                _bw_color = "#1565c0"
+            elif _bb_width < 15:
+                _bw_label = f"⚪ 正常帶寬（{_bb_width:.1f}%）"
+                _bw_color = "#4a6fa5"
+            else:
+                _bw_label = f"🟠 帶寬擴張（{_bb_width:.1f}%）→ 趨勢延伸中，波動較大"
+                _bw_color = "#d97706"
+        else:
+            _bw_label, _bw_color = "計算中", "#7a9bbf"
+
+        st.markdown(f"""
+        <div style="background:{_pb_bg};border:1px solid {_pb_color}55;
+                    border-radius:10px;padding:14px 18px;margin-bottom:14px;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
+                      color:#4a6fa5;letter-spacing:1px;margin-bottom:10px;">
+            📊 布林%B 進場位置評估
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;
+                      flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+            <div>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:28px;
+                           font-weight:700;color:{_pb_color};">
+                {_pb:.2f}
+              </span>
+              <span style="font-size:13px;color:{_pb_color};margin-left:8px;font-weight:600;">
+                {_pb_grade}
+              </span>
+            </div>
+            <div style="font-size:12px;color:#4a6fa5;text-align:right;">
+              上軌 <b style="font-family:'IBM Plex Mono'">{_bb_up:.2f}</b> ／
+              中軌 <b style="font-family:'IBM Plex Mono'">{_bb_mid:.2f}</b> ／
+              下軌 <b style="font-family:'IBM Plex Mono'">{_bb_lo:.2f}</b>
+            </div>
+          </div>
+
+          <!-- %B 進度條 -->
+          <div style="position:relative;background:#e0e0e0;border-radius:4px;height:8px;
+                      margin-bottom:6px;">
+            <div style="position:absolute;width:{_bar_pct:.1f}%;background:{_bar_color};
+                        border-radius:4px;height:8px;transition:width 0.3s;"></div>
+            <!-- 0.5 中軌標記 -->
+            <div style="position:absolute;left:41.7%;top:-4px;width:2px;height:16px;
+                        background:#7a9bbf;opacity:0.6;"></div>
+            <!-- 0.8 警戒標記 -->
+            <div style="position:absolute;left:66.7%;top:-4px;width:2px;height:16px;
+                        background:#d97706;opacity:0.7;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;
+                      font-size:9px;color:#7a9bbf;margin-bottom:8px;">
+            <span>0（下軌）</span>
+            <span>0.5（中軌）</span>
+            <span>1.0（上軌）</span>
+          </div>
+
+          <!-- 建議文字 -->
+          <div style="font-size:12px;color:{_pb_color};font-weight:600;
+                      padding:6px 10px;background:{_pb_color}11;
+                      border-radius:6px;margin-bottom:6px;">
+            💡 {_pb_pos_label}：{_pb_advice}
+          </div>
+
+          <!-- 帶寬資訊 -->
+          <div style="font-size:11px;color:{_bw_color};margin-top:4px;">
+            {_bw_label}
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── ★ 籌碼特徵看板 ────────────────────────────────────────────────
     st.markdown('<div class="section-title">🧬 籌碼特徵動態（三大法人）</div>',
