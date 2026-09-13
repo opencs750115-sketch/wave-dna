@@ -6393,6 +6393,19 @@ def run_radar_scan(tickers: list[str], period: str = "2y",
     return results
 
 def render_sidebar():
+    # ★ 統一初始化所有回傳變數（避免任何模式分支遺漏造成 UnboundLocalError）
+    ticker          = ""
+    period          = "2y"
+    top_n           = 100
+    analyze         = False
+    scan            = False
+    custom_raw      = ""
+    min_wr          = 70
+    use_hot100      = True
+    scan_universe   = "⭐ 台灣熱門100檔 (固定清單)"
+    scan_mode       = "📊 高勝率標的 (≥門檻)"
+    min_entry_score = 0
+
     with st.sidebar:
         st.markdown("""
         <div style="font-family:'IBM Plex Mono',monospace;margin-bottom:18px;">
@@ -6631,23 +6644,13 @@ def render_sidebar():
                 st.session_state[_analyze_key] = True   # 點擊後永久鎖定
 
             analyze = st.session_state[_analyze_key]    # 以 ss 為準，不受 rerun 影響
-            scan    = False
-            custom_raw = ""
-            min_wr  = 70
-            use_hot100 = True
-            scan_mode = "📊 高勝率標的 (≥門檻)"
-            min_entry_score = 0
-        elif mode == "⭐ 自選股":
-            analyze = False
-            scan    = False
-            custom_raw = ""
-            min_wr  = 70
-            use_hot100 = True
-            scan_mode = "📊 高勝率標的 (≥門檻)"
-            min_entry_score = 0
-        else:
-            scan    = st.button("📡 開始批量掃描", use_container_width=True, type="primary")
-            analyze = False
+
+        elif mode == "📡 批量掃描":
+            scan = st.button("📡 開始批量掃描",
+                             use_container_width=True, type="primary")
+
+        # ⭐ 自選股 與 🎯 飛鏢驗證 不需要按鈕（頁面自動渲染）
+        # 所有變數已在函式開頭統一初始化，此處無需重複賦值
 
         st.markdown("""
         <div style="font-size:10px;color:#7a9bbf;margin-top:18px;line-height:1.8;">
@@ -6660,9 +6663,7 @@ def render_sidebar():
 
     return (ticker.strip(), period, top_n, analyze,
             scan, custom_raw, min_wr, use_hot100, mode,
-            locals().get('scan_universe', '台灣熱門100檔'),
-            locals().get('scan_mode', '📊 高勝率標的 (≥門檻)'),
-            locals().get('min_entry_score', 0))
+            scan_universe, scan_mode, min_entry_score)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
