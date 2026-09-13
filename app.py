@@ -1545,21 +1545,36 @@ def render_dart_control_panel(period: str = "2y") -> None:
                 _tag = "🏛️ F+C複合" if use_fc else "⚡ 純技術"
                 _fc_line = ""
                 if use_fc:
-                    _fc_line = (f"🏛️ F-Score **{b.get('F_Score','?')}/9**"
-                                f"（{b.get('F_季別','')}）\n"
-                                f"🏦 籌碼 **{b.get('C_Factor','—')}**\n")
-                send_discord_notify(
-                    f"🎯 **【飛鏢射靶 · {_tag}】** {now.strftime('%m/%d %H:%M')}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📈 **{b['股名']}** (`{b['代號']}`) ｜ {b.get('產業','')}\n"
-                    f"💰 現價 **{b['現價']}** 元\n"
-                    f"📊 %B **{b['PCT_B']}**（超賣）｜量比 **{b['量比']}x**\n"
-                    f"{_fc_line}"
-                    f"🧬 2年歷史 {b['hist_n']} 次同型態 → 命中 **{b['hist_rate']}%**\n"
-                    f"⏱️ 典型 {b['avg_day']} 天出場\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📌 停利：{b['停利']}\n"
-                    f"🛡️ 停損：**{b['停損']}** 元（-10%）")
+                    _fcp = []
+                    if b.get('F_Score') is not None:
+                        _fcp.append(f"🏛️ F-Score **{b['F_Score']}/9**"
+                                    + (f"（{b['F_季別']}）" if b.get('F_季別') else ""))
+                    if b.get('C_Factor'):
+                        _fcp.append(f"🏦 籌碼 **{b['C_Factor']}**")
+                    _fc_line = "\n".join(_fcp)
+                # ★ 全部改用 .get() 安全存取，避免任何欄位缺失造成 KeyError
+                _lines = [
+                    f"🎯 **【飛鏢射靶 · {_tag}】** {now.strftime('%m/%d %H:%M')}",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"📈 **{b.get('股名','?')}** (`{b.get('代號','?')}`)"
+                    + (f" ｜ {b['產業']}" if b.get('產業') else ""),
+                    f"💰 現價 **{b.get('現價','—')}** 元",
+                ]
+                _tech = []
+                if b.get('PCT_B') is not None: _tech.append(f"%B **{b['PCT_B']}**")
+                if b.get('量比')  is not None: _tech.append(f"量比 **{b['量比']}x**")
+                if _tech: _lines.append("📊 " + "｜".join(_tech))
+                if _fc_line: _lines.append(_fc_line.rstrip("\n"))
+                if b.get('hist_n') and b.get('hist_rate') is not None:
+                    _lines.append(f"🧬 2年歷史 {b['hist_n']} 次同型態 → "
+                                  f"命中 **{b['hist_rate']}%**")
+                if b.get('avg_day') is not None:
+                    _lines.append(f"⏱️ 典型 {b['avg_day']} 天出場")
+                _lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+                if b.get('停利'): _lines.append(f"📌 停利：{b['停利']}")
+                if b.get('停損') is not None:
+                    _lines.append(f"🛡️ 停損：**{b['停損']}** 元（-10%）")
+                send_discord_notify("\n".join(_lines))
                 st.rerun()
         except Exception as e:
             pb.empty()
@@ -1940,6 +1955,54 @@ def render_dart_page(period: str = "2y") -> None:
 
                 sel_badge = ('🏅 ' if is_sel else '')
 
+                # ── 安全組裝欄位（不同版本的 dict 欄位不同，全部用 .get）──
+                def _chip(label, val, color="#e0e0e0", fmt=None, size=11):
+                    if val is None or val == "":
+                        return ""
+                    try:
+                        txt = format(val, fmt) if fmt else str(val)
+                    except Exception:
+                        txt = str(val)
+                    return (f'<span style="font-size:{size}px;color:#7a9bbf;">'
+                            f'{label} <b style="color:{color};">{txt}</b></span>')
+
+                _r1 = []
+                _r1.append(_chip("現價", cand.get("現價"), "#e0e0e0"))
+                if cand.get("R_cycle") is not None:
+                    _r1.append(_chip("R", cand.get("R_cycle"), "#4a9bbf"))
+                if cand.get("勝率") is not None:
+                    _r1.append(_chip("勝率", cand.get("勝率"), "#4caf50", ".0f"))
+                elif cand.get("hist_rate") is not None:
+                    _r1.append(_chip("歷史命中", cand.get("hist_rate"), "#4caf50", ".0f"))
+                if cand.get("PCT_B") is not None:
+                    _r1.append(_chip("%B", cand.get("PCT_B"), "#e0e0e0", ".2f"))
+                if cand.get("量比") is not None:
+                    _r1.append(_chip("量比", cand.get("量比"), "#ff9800", ".1f"))
+                _score = cand.get("買點分數", cand.get("score"))
+                if _score is not None:
+                    _r1.append(_chip("分", _score, "#ff9800"))
+                _row1 = "".join(x for x in _r1 if x)
+
+                _r2 = []
+                if cand.get("F_Score") is not None:
+                    _r2.append(_chip("F", f"{cand['F_Score']}/9", "#0a7c59", None, 10))
+                if cand.get("C_Factor"):
+                    _r2.append(_chip("籌碼", cand.get("C_Factor"), "#0a7c59", None, 10))
+                if cand.get("外資3日") is not None:
+                    _r2.append(_chip("外資", cand.get("外資3日"), "#4a6fa5", "+.0f", 10))
+                if cand.get("投信3日") is not None:
+                    _r2.append(_chip("投信", cand.get("投信3日"), "#4a6fa5", "+.0f", 10))
+                if cand.get("成交量K") is not None:
+                    _r2.append(_chip("量", f"{cand['成交量K']}K", "#4a6fa5", None, 10))
+                if cand.get("產業"):
+                    _r2.append(_chip("", cand.get("產業"), "#7a9bbf", None, 10))
+                if cand.get("D1下限") is not None:
+                    try:
+                        _r2.append(_chip("D+1↓", float(cand["D1下限"]), "#7a9bbf", ".2f", 10))
+                    except Exception:
+                        pass
+                _row2 = "".join(x for x in _r2 if x)
+
                 card_html = f"""
                 <div style="background:{bg};border:2px solid {border};border-radius:10px;
                             padding:10px 12px;margin-bottom:8px;position:relative;">
@@ -1957,33 +2020,10 @@ def render_dart_page(period: str = "2y") -> None:
                     </div>
                   </div>
                   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
-                    <span style="font-size:11px;color:#7a9bbf;">
-                      現價 <b style="color:#e0e0e0;">{cand['現價']}</b>
-                    </span>
-                    <span style="font-size:11px;color:#7a9bbf;">
-                      R <b style="color:#4a9bbf;">{cand['R_cycle']}</b>
-                    </span>
-                    <span style="font-size:11px;color:#7a9bbf;">
-                      勝率 <b style="color:#4caf50;">{cand['勝率']:.0f}%</b>
-                    </span>
-                    <span style="font-size:11px;color:#7a9bbf;">
-                      %B <b>{cand['PCT_B']:.2f}</b>
-                    </span>
-                    <span style="font-size:11px;color:#7a9bbf;">
-                      分 <b style="color:#ff9800;">{cand['買點分數']}</b>
-                    </span>
+                    {_row1}
                   </div>
                   <div style="display:flex;gap:10px;margin-top:4px;">
-                    <span style="font-size:10px;color:#4a6fa5;">
-                      外資{cand['外資3日']:+.0f}
-                    </span>
-                    <span style="font-size:10px;color:#4a6fa5;">
-                      投信{cand['投信3日']:+.0f}
-                    </span>
-                    <span style="font-size:10px;color:#4a6fa5;">
-                      量{cand['成交量K']}K
-                    </span>
-                    {"<span style='font-size:10px;color:#7a9bbf;'>D+1↓" + f"{cand['D1下限']:.2f}" + "</span>" if cand.get('D1下限') else ""}
+                    {_row2}
                   </div>
                 </div>
                 """
