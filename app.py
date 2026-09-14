@@ -448,6 +448,11 @@ def build_s_pool(min_value_e: float = 5.0, min_eps_q: float = 2.0,
             # 軌道A：穩健型（原規則）
             track_a = min(e4) >= min_eps_q
 
+            # ★ 硬性底線：近4季不得有任何虧損季（不賺錢的公司一律排除）
+            #   這是「不選不賺錢公司」原則的絕對防線，優先於任何軌道
+            if min(e4) <= 0:
+                return None
+
             # 軌道B：成長型（近2季 YoY > 20%）
             track_b = False
             yoy_list = []
@@ -459,7 +464,8 @@ def build_s_pool(min_value_e: float = 5.0, min_eps_q: float = 2.0,
                         yoy_list.append((cur - prev) / prev * 100)
                 if yoy_list:
                     avg_yoy = sum(yoy_list) / len(yoy_list)
-                    track_b = (avg_yoy > 20.0) and (latest > 0.5)
+                    # 成長型仍要求最新季 EPS >= 1.0（原0.5過低）
+                    track_b = (avg_yoy > 20.0) and (latest >= 1.0)
 
             if not (track_a or track_b):
                 return None
@@ -675,11 +681,23 @@ def dart_shoot_best(period: str = "2y", progress_cb=None,
     import datetime as _dt, pytz as _pytz
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
+    import datetime as _dtv, pytz as _pzv
+    _today_str = _dtv.datetime.now(_pzv.timezone("Asia/Taipei")).strftime("%Y-%m-%d")
+
     pool = _pool_load()
     if not pool or not pool.get("stocks"):
-        return {"error": "S級集裝箱尚未建立，請先按「🔄 更新S級集裝箱」"}
+        return {"error": "S級集裝箱尚未建立，請先按「🔄 更新S級池」"}
 
-    stocks = pool["stocks"]
+    # ★ 池子新鮮度檢查：非今日資料一律擋下（避免用到舊版篩選邏輯的快取）
+    if pool.get("date") != _today_str:
+        return {"error": f"S級集裝箱是 {pool.get('date','舊')} 的資料，"
+                         f"請先按「🔄 更新S級池」重新建立（今日 {_today_str}）"}
+
+    # ★ 二次驗證：池內個股必須通過 EPS 底線（防止舊版快取漏網）
+    stocks = [s for s in pool["stocks"]
+              if s.get("eps_min") is not None and s["eps_min"] > 0]
+    if not stocks:
+        return {"error": "S級集裝箱無有效標的（可能是舊版快取），請重新建立"}
     fc_map = {}
     if use_fc:
         # ★ F+C 模式：先用 F-Score>=7 過濾（實測勝率 72.4% → 86.5%）
