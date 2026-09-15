@@ -522,6 +522,83 @@ ENTRY_GAP_MAX      = 2.5    # D+1 開盤價相對 D 日收盤的最大容許漲�
 ENTRY_PCT_B_MAX    = 0.25   # %B 進場上限
 ENTRY_VOL_MIN      = 1.0    # 量比下限（方案①：無上限）
 
+# ═══════════════════════════════════════════════════════════════════════
+#  🚪 寧缺勿濫守門機制（No-Trade Zone）
+#  ─────────────────────────────────────────────────────────────────────
+#  資金有限，寧可錯過也不要做錯。三道防線：
+#    ① 分數門檻：低於 SCORE_GATE 一律不推薦
+#    ② 每日上限：最多只選 MAX_PICKS_PER_DAY 檔
+#    ③ 大盤熔斷：大盤重挫當日全面停止進場
+# ═══════════════════════════════════════════════════════════════════════
+
+SCORE_GATE          = 85.0   # 高確定性分數門檻（低於此值＝不交易）
+MAX_PICKS_PER_DAY   = 2      # 每日最多選股數（資金有限，寧缺勿濫）
+MARKET_CRASH_PCT    = -2.0   # 大盤當日跌幅超過此值 → 全面不進場
+PCT_B_TIGHT         = 0.15   # 嚴格位階：只買剛從布林下軌彈起的
+
+# ── 校正監測參數（依外部顧問建議修正）────────────────────────
+CALIB_MIN_SAMPLES   = 200    # 校正所需最小樣本（30筆標準差14.3%，太脆弱）
+CALIB_ALERT_GAP     = 20.0   # EV 落差超過此 % → 發出警示（不自動打折）
+
+
+def get_market_status() -> dict:
+    """
+    大盤環境偵測（用於熔斷 + 校正分流）
+    回傳 {chg_pct, above_ma20, crash, regime}
+    """
+    import warnings as _w; _w.filterwarnings("ignore")
+    try:
+        import yfinance as _yf
+        tw = _yf.Ticker("^TWII").history(period="3mo")
+        if tw.empty or len(tw) < 21:
+            return {"chg_pct": 0.0, "above_ma20": True,
+                    "crash": False, "regime": "未知", "ok": False}
+        c = tw["Close"].dropna()
+        last, prev = float(c.iloc[-1]), float(c.iloc[-2])
+        ma20 = float(c.rolling(20).mean().iloc[-1])
+        chg = (last - prev) / prev * 100 if prev else 0.0
+        above = last > ma20
+        return {
+            "chg_pct": round(chg, 2),
+            "above_ma20": above,
+            "crash": chg <= MARKET_CRASH_PCT,
+            "regime": "多頭" if above else "空頭",
+            "close": round(last, 0), "ma20": round(ma20, 0),
+            "ok": True,
+        }
+    except Exception:
+        return {"chg_pct": 0.0, "above_ma20": True,
+                "crash": False, "regime": "未知", "ok": False}
+
+
+def calc_expectancy(trades: list[dict]) -> dict | None:
+    """
+    計算期望值 EV（依顧問建議：EV 才是關鍵，不是勝率）
+      EV = 勝率 × 平均獲利 − 敗率 × 平均虧損
+
+    ★ 為何用 EV 而非勝率：
+      勝率80% + 單次賺1%賠5% → EV -0.2%（必死）
+      勝率40% + 單次賺8%賠2% → EV +2.0%（大賺）
+      只看勝率會誤砍「低勝率高盈虧比」的優質策略。
+    """
+    rets = [t.get("漲跌%") for t in trades if t.get("漲跌%") is not None]
+    if len(rets) < 5:
+        return None
+    arr = np.array(rets, dtype=float)
+    wins, loss = arr[arr > 0], arr[arr <= 0]
+    n = len(arr)
+    wr = len(wins) / n
+    avg_w = float(wins.mean()) if wins.size else 0.0
+    avg_l = float(loss.mean()) if loss.size else 0.0
+    ev = wr * avg_w + (1 - wr) * avg_l
+    pf = float(abs(wins.sum() / loss.sum())) if loss.size and loss.sum() != 0 else 9.99
+    return {
+        "n": n, "rate": round(wr * 100, 1),
+        "avg_win": round(avg_w, 2), "avg_loss": round(avg_l, 2),
+        "ev": round(ev, 3), "pf": round(min(pf, 9.99), 2),
+        "positive": ev > 0,
+    }
+
 
 def simulate_exit(high: np.ndarray, low: np.ndarray, close: np.ndarray,
                   entry_idx: int, entry_price: float,
@@ -810,7 +887,7 @@ def _dart_score_one(code: str, suffix: str, period: str = "2y",
 
 
 def dart_shoot_best(period: str = "2y", progress_cb=None,
-                    use_fc: bool = False) -> dict | None:
+                    use_fc: bool = False, strict: bool = True) -> dict | None:
     """
     🎯 射靶：從 S 級集裝箱中選出【命中率最高的一檔】
     ─────────────────────────────────────────────────────────────
@@ -828,6 +905,18 @@ def dart_shoot_best(period: str = "2y", progress_cb=None,
 
     import datetime as _dtv, pytz as _pzv
     _today_str = _dtv.datetime.now(_pzv.timezone("Asia/Taipei")).strftime("%Y-%m-%d")
+
+    # ── 🚪 守門⓪：大盤熔斷（重挫日全面停止進場）──────────────
+    mkt = get_market_status()
+    if mkt.get("crash"):
+        _n = _dtv.datetime.now(_pzv.timezone("Asia/Taipei"))
+        return {"date": _n.strftime("%Y-%m-%d"),
+                "shoot_time": _n.strftime("%Y-%m-%d %H:%M:%S"),
+                "candidates": [], "best": None, "no_trade": True,
+                "market": mkt,
+                "msg": (f"⛔ 大盤今日重挫 {mkt['chg_pct']:.2f}%"
+                        f"（門檻 {MARKET_CRASH_PCT}%），系統性風險過高，"
+                        f"全面停止進場。")}
 
     pool = _pool_load()
     if not pool or not pool.get("stocks"):
@@ -893,22 +982,51 @@ def dart_shoot_best(period: str = "2y", progress_cb=None,
                             f"已掃 {done}/{total}，符合 {len(results)} 支")
 
     now = _dt.datetime.now(_pytz.timezone("Asia/Taipei"))
+    base = {"date": now.strftime("%Y-%m-%d"),
+            "shoot_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "pool_size": total, "market": mkt}
+
     if not results:
         if progress_cb: progress_cb(1.0, "今日無符合條件標的")
-        return {"date": now.strftime("%Y-%m-%d"),
-                "shoot_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "candidates": [], "best": None,
+        return {**base, "candidates": [], "best": None,
                 "msg": "今日全市場無符合條件標的（不硬選）"}
 
-    # 依綜合評分排序，第一名就是「命中率最高的一檔」
     results.sort(key=lambda x: -x["score"])
-    best = results[0]
+    all_found = len(results)
+
+    # ── 🚪 守門①：嚴格位階（只買剛從下軌彈起的）────────────
+    #   ★ 不做 fallback：位階不好就是不買，這是「寧缺勿濫」的核心。
+    #     舊版在無合格標的時退回全部候選，等於門檻失效。
+    if strict:
+        results = [r for r in results if r.get("PCT_B", 1) < PCT_B_TIGHT]
+        if not results:
+            if progress_cb: progress_cb(1.0, "無標的位階達標")
+            return {**base, "candidates": [], "best": None,
+                    "no_trade": True, "all_found": all_found,
+                    "msg": (f"⛔ 今日 {all_found} 檔符合技術條件，但全部 "
+                            f"%B ≥ {PCT_B_TIGHT}（位階偏高，非剛從下軌彈起）。"
+                            f"\n下檔風險過大，今日不進場。")}
+
+    # ── 🚪 守門②：分數門檻（低於 85 分一律不推薦）──────────
+    qualified = [r for r in results if r.get("score", 0) >= SCORE_GATE]
+
+    if not qualified:
+        top = results[0]
+        if progress_cb: progress_cb(1.0, "無標的達門檻")
+        return {**base, "candidates": results[:20], "best": None,
+                "no_trade": True, "all_found": all_found,
+                "msg": (f"⛔ 今日 {all_found} 檔符合技術條件，但最高分僅 "
+                        f"{top['score']:.1f} 分，未達 {SCORE_GATE} 分門檻。"
+                        f"\n寧缺勿濫——今天最好的交易就是不交易。")}
+
+    # ── 🚪 守門③：每日上限（資金有限）──────────────────────
+    picks = qualified[:MAX_PICKS_PER_DAY]
+    best = picks[0]
     if progress_cb: progress_cb(1.0, f"✅ 選出 {best['股名']}")
 
-    return {"date": now.strftime("%Y-%m-%d"),
-            "shoot_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "candidates": results[:20], "best": best,
-            "pool_size": total, "msg": ""}
+    return {**base, "candidates": picks, "best": best,
+            "all_found": all_found, "n_qualified": len(qualified),
+            "no_trade": False, "msg": ""}
 
 
 def _dart_load_sessions() -> list[dict]:
@@ -1312,6 +1430,119 @@ def _dart_backtest(days: int = 5, pool_size: int = 30,
     return sessions
 
 
+def render_strategy_analytics(sessions: list[dict]) -> None:
+    """
+    📊 策略健檢（EV 監測）— 依外部顧問三點建議設計
+      ① 用 EV 而非勝率：勝率80%+賺1%賠5% → EV為負（必死）
+      ② 大盤環境分流：多空分開比對，避免跨環境誤判
+      ③ 警示優先於自動打折：全域打折不改排序，是無效設計
+    """
+    trades = []
+    for s in sessions:
+        sel = set(s.get("selected_codes", []))
+        best = s.get("best")
+        for c in s.get("candidates", []):
+            if c.get("result") is None:
+                continue
+            if sel and c.get("代號") not in sel:
+                continue
+            if not sel and best and c.get("代號") != best.get("代號"):
+                continue
+            trades.append({**c, "date": s["session_id"],
+                           "regime": s.get("market", {}).get("regime", "未知")})
+
+    st.markdown('<div class="section-title">📊 策略健檢（EV 監測）</div>',
+                unsafe_allow_html=True)
+
+    ev = calc_expectancy(trades)
+    if ev is None:
+        st.info(f"📊 已結算交易不足 5 筆，持續累積中。"
+                f"（校正需 {CALIB_MIN_SAMPLES} 筆以上才可靠——"
+                f"實測 30 筆窗口的勝率標準差達 14.3%，太脆弱）")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("期望值 EV", f"{ev['ev']:+.3f}%",
+              delta="正期望 ✅" if ev["positive"] else "負期望 ⚠️",
+              delta_color="normal" if ev["positive"] else "inverse")
+    c2.metric("盈虧比 PF", f"{ev['pf']:.2f}")
+    c3.metric("勝率", f"{ev['rate']:.1f}%",
+              delta=f"賺{ev['avg_win']:+.2f}% 賠{ev['avg_loss']:+.2f}%")
+    c4.metric("已結算", f"{ev['n']} 筆", delta=f"校正門檻 {CALIB_MIN_SAMPLES}")
+
+    with st.expander("🔍 期望值拆解（為何勝率不是關鍵）", expanded=False):
+        n = ev["n"]; nw = round(n * ev["rate"] / 100); nl = n - nw
+        st.markdown(f"""
+**{n} 次交易的實際結果**
+```
+賺錢 {nw} 次 × ({ev['avg_win']:+.2f}%) = {nw*ev['avg_win']:+.1f}%
+賠錢 {nl} 次 × ({ev['avg_loss']:+.2f}%) = {nl*ev['avg_loss']:+.1f}%
+─────────────────────────────
+合計 {nw*ev['avg_win'] + nl*ev['avg_loss']:+.1f}%
+平均每次 = {ev['ev']:+.3f}%
+```
+單次獲利 {ev['avg_win']:+.2f}% 對比虧損 {ev['avg_loss']:+.2f}% 看似不利，
+但賺的次數是賠的 {nw/max(nl,1):.1f} 倍，整體為{'正' if ev['positive'] else '負'}期望值。
+""")
+
+    bull = [t for t in trades if t.get("regime") == "多頭"]
+    bear = [t for t in trades if t.get("regime") == "空頭"]
+    if len(bull) >= 5 or len(bear) >= 5:
+        st.markdown("**🌤️ 大盤環境分流**（避免跨環境誤判）")
+        _r1, _r2 = st.columns(2)
+        for col, ts, lb in [(_r1, bull, "多頭 (>MA20)"), (_r2, bear, "空頭 (<MA20)")]:
+            e = calc_expectancy(ts)
+            if e:
+                col.metric(lb, f"EV {e['ev']:+.3f}%",
+                           delta=f"{e['n']}筆 勝率{e['rate']:.0f}% PF{e['pf']:.2f}")
+            else:
+                col.metric(lb, "樣本不足", delta=f"{len(ts)}筆")
+
+    bl = _BACKTEST_BASELINE
+    if not ev["positive"]:
+        st.error(f"⚠️ **期望值轉負（{ev['ev']:+.3f}%）** — 建議降低部位或暫停下單。\n\n"
+                 f"這比勝率下降更值得警惕：即使勝率仍高，"
+                 f"只要單次虧損遠大於獲利，長期必然虧損。")
+    elif ev["n"] >= CALIB_MIN_SAMPLES:
+        gap = (ev["rate"] - bl["rate"]) / bl["rate"] * 100
+        if abs(gap) > CALIB_ALERT_GAP:
+            st.warning(f"🔔 **實盤與回測落差 {gap:+.1f}%**（樣本 {ev['n']} 筆）\n\n"
+                       f"落差通常代表市場風格切換，建議**人為檢視策略邏輯**，"
+                       f"而非讓系統自動調整權重。")
+        else:
+            st.success(f"✅ 實盤與回測一致（落差 {gap:+.1f}%），策略穩定")
+    else:
+        st.info(f"ℹ️ 目前 {ev['n']} 筆，EV 為正。"
+                f"累積至 {CALIB_MIN_SAMPLES} 筆後才啟用落差警示"
+                f"（小樣本勝率波動過大，不足以判斷）")
+
+    if ev["n"] >= 20:
+        with st.expander("🔬 分層 EV 分析（找出該調整的區間）", expanded=False):
+            st.caption("校正應針對特定區間，而非全域打折"
+                       "（全域打折不改變排序，是無效設計）")
+            for key, bins, labels, title in [
+                ("PCT_B", [(-9,0.05),(0.05,0.12),(0.12,0.19),(0.19,0.26)],
+                 ["<0.05","0.05-0.12","0.12-0.19","0.19-0.25"], "%B 位階"),
+                ("量比", [(1.0,1.5),(1.5,2.2),(2.2,3.0),(3.0,99)],
+                 ["1.0-1.5","1.5-2.2","2.2-3.0",">3.0"], "量比"),
+            ]:
+                st.markdown(f"**{title}**")
+                any_row = False
+                for lb, (lo, hi) in zip(labels, bins):
+                    sub = [t for t in trades if lo <= (t.get(key) or 0) < hi]
+                    e = calc_expectancy(sub)
+                    if e:
+                        any_row = True
+                        col = "#0a7c59" if e["positive"] else "#c0392b"
+                        st.markdown(
+                            f"<div style='font-size:12px;font-family:monospace'>"
+                            f"{lb:<12} EV <b style='color:{col}'>{e['ev']:+.3f}%</b>"
+                            f"　勝率{e['rate']:5.1f}%　PF{e['pf']:.2f}"
+                            f"　({e['n']}筆)</div>", unsafe_allow_html=True)
+                if not any_row:
+                    st.caption("　樣本不足")
+
+
 def render_dart_control_panel(period: str = "2y") -> None:
     """
     🎮 飛鏢控制台（方案C：手動觸發 + 備份還原）
@@ -1365,6 +1596,45 @@ def render_dart_control_panel(period: str = "2y") -> None:
             st.metric("F-Score池", f"{len(fc_pool['stocks']) if fc_ok else 0} 支",
                       delta=f"F≥{_FC_MIN_SCORE}" if fc_ok else "未建立",
                       delta_color="normal" if fc_ok else "inverse")
+
+    # ── 🚪 寧缺勿濫守門狀態 ────────────────────────────────
+    with st.expander("⚙️ 守門參數微調（預設值已經過驗證，非必要不建議調整）"):
+        _s1, _s2, _s3 = st.columns(3)
+        _gate = _s1.slider("分數門檻", 70, 95, int(SCORE_GATE), 1,
+                           key="cfg_gate",
+                           help="低於此分數一律不推薦。越高越嚴，交易次數越少")
+        _maxp = _s2.slider("每日上限", 1, 5, MAX_PICKS_PER_DAY, 1,
+                           key="cfg_maxp",
+                           help="資金有限，建議 1~2 檔")
+        _ptb  = _s3.slider("位階門檻 %B", 0.05, 0.25, PCT_B_TIGHT, 0.01,
+                           key="cfg_pctb",
+                           help="只買 %B 低於此值的（剛從布林下軌彈起）")
+        st.caption(f"目前設定：{_gate} 分以上、每日最多 {_maxp} 檔、"
+                   f"%B < {_ptb:.2f}　｜　"
+                   f"大盤跌逾 {abs(MARKET_CRASH_PCT)}% 自動熔斷")
+    # 套用微調值
+    globals()["SCORE_GATE"]        = float(_gate)
+    globals()["MAX_PICKS_PER_DAY"] = int(_maxp)
+    globals()["PCT_B_TIGHT"]       = float(_ptb)
+
+    _mkt = get_market_status()
+    _g1, _g2, _g3, _g4 = st.columns(4)
+    _g1.metric("分數門檻", f"{SCORE_GATE:.0f} 分", delta="低於不推薦",
+               delta_color="off")
+    _g2.metric("每日上限", f"{MAX_PICKS_PER_DAY} 檔", delta="資金有限",
+               delta_color="off")
+    _g3.metric("位階門檻", f"%B < {PCT_B_TIGHT}", delta="剛從下軌彈起",
+               delta_color="off")
+    if _mkt.get("ok"):
+        _g4.metric("大盤環境", _mkt["regime"],
+                   delta=f"{_mkt['chg_pct']:+.2f}%",
+                   delta_color="inverse" if _mkt["crash"] else "normal")
+    else:
+        _g4.metric("大盤環境", "查詢中")
+
+    if _mkt.get("crash"):
+        st.error(f"⛔ 大盤今日重挫 {_mkt['chg_pct']:.2f}%，"
+                 f"系統已啟動熔斷，今日不進場")
 
     _b1, _b2, _b3, _b4 = st.columns(4)
     with _b1:
@@ -1422,6 +1692,27 @@ def render_dart_control_panel(period: str = "2y") -> None:
             pb.empty()
             if res.get("error"):
                 st.error(res["error"])
+            elif res.get("no_trade"):
+                # ★ 寧缺勿濫：達不到門檻就明確告知「今天不交易」
+                st.warning(res.get("msg", "⛔ 今日無標的達門檻"))
+                _mk = res.get("market", {})
+                if _mk.get("ok"):
+                    st.caption(f"大盤 {_mk['close']:.0f}（{_mk['regime']}）"
+                               f"｜當日 {_mk['chg_pct']:+.2f}%"
+                               f"｜MA20 {_mk['ma20']:.0f}")
+                send_discord_notify(
+                    f"⛔ **【飛鏢守門】** {now.strftime('%m/%d %H:%M')}\n"
+                    f"{res.get('msg','今日無標的達門檻')}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💰 保住資金也是一種獲利。")
+                sess = _dart_load_sessions()
+                if not _dart_get_session(sess, today):
+                    sess.append({"session_id": today,
+                                 "shoot_time": res["shoot_time"],
+                                 "candidates": res.get("candidates", [])[:20],
+                                 "selected_codes": [], "settled": False,
+                                 "best": None, "no_trade": True})
+                    _dart_save_sessions(sess)
             elif not res.get("best"):
                 st.info("🎯 " + res.get("msg", "今日無符合條件標的"))
                 send_discord_notify(
@@ -1437,7 +1728,15 @@ def render_dart_control_panel(period: str = "2y") -> None:
                     _dart_save_sessions(sess)
             else:
                 b = res["best"]
-                st.success(f"🎯 命中率最高標的：**{b['股名']} ({b['代號']})**")
+                _nq = res.get("n_qualified", 1)
+                _af = res.get("all_found", 1)
+                st.success(f"🎯 命中率最高標的：**{b['股名']} ({b['代號']})**"
+                           f"　（{_af} 檔符合技術條件 → {_nq} 檔達 {SCORE_GATE} 分 "
+                           f"→ 推薦 {len(res['candidates'])} 檔）")
+                _mk = res.get("market", {})
+                if _mk.get("ok"):
+                    st.caption(f"大盤 {_mk['close']:.0f}（{_mk['regime']}）"
+                               f"｜當日 {_mk['chg_pct']:+.2f}%")
                 # 存入 session
                 sess = _dart_load_sessions()
                 sess = [s for s in sess if s["session_id"] != today]
