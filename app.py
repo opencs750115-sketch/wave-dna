@@ -1397,38 +1397,16 @@ def _dart_backtest(days: int = 5, pool_size: int = 30,
                 a["high"], a["low"], a["close"], i, entry)
             net = ret - COST_BT
 
-            # ★ 回測也要算真實評分（用該時點之前的歷史，無 look-ahead）
-            #   舊版寫死 "買點分數": 0，導致卡片顯示的分數來源不明
-            _hist = backtest_signals(
-                {k: (v[:i + 1] if k != "index" else v[:i + 1])
-                 for k, v in a.items()}, min_events=5)
-            if _hist:
-                _sc = round(
-                    min(_hist["rate"] / 80 * 100, 100) * 0.40
-                    + min(max(_hist["avg"], 0) / 3.0 * 100, 100) * 0.25
-                    + min(_hist["pf"] / 2.5 * 100, 100) * 0.20
-                    + max(0, 100 - _hist["avg_day"] * 5) * 0.15, 1)
-            else:
-                _hist, _sc = {}, 0.0
-
             picks.append({
-                # ── 共通欄位（與 _dart_score_one 對齊）──────────
                 "代號":     code + meta["suffix"],
                 "股名":     meta["name"],
-                "現價":     round(entry, 2),          # D+1 開盤進場價
-                "PCT_B":    round(float(a["pct_b"][i]), 3),
-                "量比":     round(float(a["vol_x"][i]), 2),
-                "hist_n":    _hist.get("n", 0),
-                "hist_rate": round(_hist.get("rate", 0), 1),
-                "hist_ret":  round(_hist.get("avg", 0), 2),
-                "hist_pf":   _hist.get("pf", 0),
-                "avg_day":   round(_hist.get("avg_day", 0), 1),
-                "score":     _sc,
-                "技術分":    _sc,
-                # ── 回測專屬欄位 ────────────────────────────────
+                "現價":     round(entry, 2),          # ★ D+1 開盤進場價
                 "D日收盤":  round(float(a["close"][i]), 2),
                 "開高%":    round((entry - a["close"][i]) / a["close"][i] * 100, 2),
+                "PCT_B":    round(float(a["pct_b"][i]), 3),
+                "量比":     round(float(a["vol_x"][i]), 2),
                 "成交量K":  meta.get("vol_k", 0),
+                "買點分數": 0,
                 "次日收盤": round(float(a["close"][i + 1]), 2)
                             if i + 1 < len(a["close"]) else None,
                 "漲跌%":    round(net, 2),
@@ -1563,175 +1541,6 @@ def render_strategy_analytics(sessions: list[dict]) -> None:
                             f"　({e['n']}筆)</div>", unsafe_allow_html=True)
                 if not any_row:
                     st.caption("　樣本不足")
-
-
-def audit_data_integrity(code: str, suffix: str = ".TW",
-                         period: str = "6mo") -> dict:
-    """
-    🔍 資料欄位正確性稽核（單檔）
-    ─────────────────────────────────────────────────────────────
-    「資料正確性比跑數據驗證更重要」——先確認抓到的欄位值是對的，
-    再談回測結果，避免在錯誤的資料上繞路。
-
-    稽核七項：
-      ① OHLCV 欄位完整性與合理性（High>=Low、Close 在區間內）
-      ② 布林 %B 計算正確性（手算 vs 系統值）
-      ③ 量比 VMA20 計算正確性
-      ④ K棒型態判斷正確性
-      ⑤ D+1 開盤價取值正確性（無 look-ahead）
-      ⑥ 缺值/零值/異常值統計
-      ⑦ 與 TWSE 官方收盤價交叉比對
-    """
-    import warnings as _w; _w.filterwarnings("ignore")
-    rep = {"code": code + suffix, "checks": [], "ok": True}
-
-    def _add(name, passed, detail=""):
-        rep["checks"].append({"name": name, "pass": bool(passed),
-                              "detail": detail})
-        if not passed:
-            rep["ok"] = False
-
-    try:
-        import yfinance as _yf
-        df = _yf.Ticker(code + suffix).history(period=period)
-        if df.empty:
-            _add("資料下載", False, "yfinance 回傳空資料")
-            return rep
-        _add("資料下載", True, f"{len(df)} 筆")
-
-        # ① OHLCV 合理性
-        bad_hl = int((df["High"] < df["Low"]).sum())
-        bad_c  = int(((df["Close"] > df["High"]) |
-                      (df["Close"] < df["Low"])).sum())
-        bad_o  = int(((df["Open"] > df["High"]) |
-                      (df["Open"] < df["Low"])).sum())
-        _add("OHLC 邏輯", bad_hl == 0 and bad_c == 0 and bad_o == 0,
-             f"High<Low:{bad_hl} Close越界:{bad_c} Open越界:{bad_o}")
-
-        zero_v = int((df["Volume"] <= 0).sum())
-        _add("成交量非零", zero_v < len(df) * 0.1,
-             f"零成交量 {zero_v}/{len(df)} 天")
-
-        nan_cnt = int(df[["Open","High","Low","Close"]].isna().sum().sum())
-        _add("無缺值", nan_cnt == 0, f"NaN {nan_cnt} 個")
-
-        # ② 布林 %B 交叉驗算
-        a = compute_signal_arrays(df)
-        if a is None:
-            _add("指標計算", False, "compute_signal_arrays 回傳 None")
-            return rep
-
-        c = df["Close"]
-        ma = c.rolling(20).mean(); sd = c.rolling(20).std()
-        manual_pb = float(((c - (ma - 2.1*sd)) /
-                           ((ma + 2.1*sd) - (ma - 2.1*sd))).iloc[-1])
-        sys_pb = float(a["pct_b"][-1])
-        _add("%B 計算", abs(manual_pb - sys_pb) < 1e-6,
-             f"手算 {manual_pb:.4f} vs 系統 {sys_pb:.4f}")
-
-        # ③ 量比交叉驗算
-        manual_vx = float((df["Volume"] /
-                           df["Volume"].rolling(20).mean()).iloc[-1])
-        sys_vx = float(a["vol_x"][-1])
-        _add("量比 計算", abs(manual_vx - sys_vx) < 1e-6,
-             f"手算 {manual_vx:.4f} vs 系統 {sys_vx:.4f}")
-
-        # ④ K棒型態
-        o, cl_, lo_ = (float(df["Open"].iloc[-1]), float(df["Close"].iloc[-1]),
-                       float(df["Low"].iloc[-1]))
-        body = abs(cl_ - o); lsh = min(o, cl_) - lo_
-        manual_sf = (cl_ > o) or (lsh >= body and body > 0)
-        _add("K棒型態", manual_sf == bool(a["stop_fall"][-1]),
-             f"手算 {manual_sf} vs 系統 {bool(a['stop_fall'][-1])}")
-
-        # ⑤ D+1 開盤價（無 look-ahead 驗證）
-        if len(a["open"]) >= 3:
-            i = len(a["close"]) - 3
-            e = check_entry_price(a, i)
-            expect = float(a["open"][i + 1])
-            gap = (expect - a["close"][i]) / a["close"][i] * 100
-            if gap > ENTRY_GAP_MAX:
-                _add("D+1 進場價", e is None,
-                     f"開高 {gap:.2f}% > {ENTRY_GAP_MAX}% → 應放棄，實際 "
-                     + ("放棄 ✓" if e is None else "未放棄 ✗"))
-            else:
-                _add("D+1 進場價", e is not None and abs(e - expect) < 1e-6,
-                     f"取 open[i+1]={expect:.2f}（非 close[i]={a['close'][i]:.2f}）")
-
-        # ⑥ 異常值
-        chg = c.pct_change().abs() * 100
-        extreme = int((chg > 15).sum())
-        _add("無異常跳動", extreme <= 2,
-             f"單日漲跌>15% 有 {extreme} 天（台股漲跌幅限制10%）")
-
-        # ⑦ 與 TWSE 官方收盤價比對
-        try:
-            import urllib.request as _ur, ssl as _ssl, json as _js
-            ctx = _ssl.create_default_context()
-            req = _ur.Request(
-                "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
-                headers={"User-Agent": "Mozilla/5.0"})
-            with _ur.urlopen(req, timeout=15, context=ctx) as r:
-                twse = _js.loads(r.read())
-            hit = next((x for x in twse if x.get("Code") == code), None)
-            if hit:
-                off = float(hit["ClosingPrice"].replace(",", ""))
-                yf_c = float(c.iloc[-1])
-                diff = abs(off - yf_c) / off * 100
-                _add("TWSE 交叉比對", diff < 1.0,
-                     f"官方 {off} vs yfinance {yf_c:.2f}（差 {diff:.2f}%）")
-            else:
-                _add("TWSE 交叉比對", True, "上櫃股或今日無成交，跳過")
-        except Exception as e:
-            _add("TWSE 交叉比對", True, f"API 無法連線，跳過（{str(e)[:30]}）")
-
-    except Exception as e:
-        _add("稽核執行", False, f"{type(e).__name__}: {str(e)[:80]}")
-
-    rep["n_pass"] = sum(1 for x in rep["checks"] if x["pass"])
-    rep["n_total"] = len(rep["checks"])
-    return rep
-
-
-def render_data_audit() -> None:
-    """資料稽核 UI — 在跑任何回測前先確認欄位正確"""
-    st.markdown('<div class="section-title">🔍 資料正確性稽核</div>',
-                unsafe_allow_html=True)
-    st.caption("資料正確性比回測結果更重要——先確認抓到的欄位值是對的，"
-               "再談績效驗證，避免在錯誤的資料上繞路。")
-
-    _c1, _c2 = st.columns([3, 1])
-    with _c1:
-        _code = st.text_input("股票代號", value="2330",
-                              key="audit_code", label_visibility="collapsed",
-                              placeholder="輸入代號，例如 2330")
-    with _c2:
-        _sfx = st.selectbox("市場", [".TW", ".TWO"], key="audit_sfx",
-                            label_visibility="collapsed")
-
-    if st.button("🔍 執行稽核", use_container_width=True, key="audit_run"):
-        with st.spinner("稽核中…"):
-            rep = audit_data_integrity(_code.strip(), _sfx)
-
-        _ok = rep["ok"]
-        st.markdown(
-            f"### {'✅' if _ok else '⚠️'} {rep['code']}　"
-            f"{rep['n_pass']}/{rep['n_total']} 項通過")
-
-        for ck in rep["checks"]:
-            icon = "✅" if ck["pass"] else "❌"
-            color = "#0a7c59" if ck["pass"] else "#c0392b"
-            st.markdown(
-                f"<div style='font-size:13px;padding:4px 0;'>"
-                f"{icon} <b style='color:{color}'>{ck['name']}</b>"
-                f"　<span style='color:#7a9bbf'>{ck['detail']}</span></div>",
-                unsafe_allow_html=True)
-
-        if not _ok:
-            st.error("⚠️ 有項目未通過，該股票的回測結果可能不可信。"
-                     "建議排除此股或檢查資料來源。")
-        else:
-            st.success("✅ 所有欄位驗算通過，資料可信，回測結果有效。")
 
 
 def render_dart_control_panel(period: str = "2y") -> None:
@@ -1990,7 +1799,10 @@ def render_dart_control_panel(period: str = "2y") -> None:
         _e1, _e2 = st.columns(2)
         with _e1:
             sess = _dart_load_sessions()
-            _rep = analyze_dart_history(sess)
+            # ── 修正：analyze_dart_history 已移除，改用 calc_expectancy ──
+            _all_trades = [c for s in sess for c in s.get("candidates", [])
+                           if c.get("漲跌%") is not None]
+            _rep = calc_expectancy(_all_trades)
             backup = {
                 "version": 2,
                 "strategy": "F",
@@ -2001,8 +1813,8 @@ def render_dart_control_panel(period: str = "2y") -> None:
                     "stop_loss": -10.0, "max_hold": 20,
                 },
                 "baseline": _BACKTEST_BASELINE,
-                "live_stats": ({"tot": _rep["tot"], "rate": round(_rep["rate"], 1),
-                                "avg": round(_rep["avg"], 2),
+                "live_stats": ({"tot": _rep["n"], "rate": round(_rep["rate"], 1),
+                                "avg": round(_rep["ev"], 3),
                                 "pf": round(_rep["pf"], 2)} if _rep else None),
                 "exported_at": now.isoformat(),
                 "sessions": sess, "pool": _pool_load(),
@@ -2113,8 +1925,6 @@ def render_dart_page(period: str = "2y") -> None:
     已結算的：漲顯示綠色漲幅，跌顯示紅色跌幅。
     """
     render_dart_control_panel(period=period)
-    with st.expander('🔍 資料正確性稽核（跑回測前先驗欄位）'):
-        render_data_audit()
     render_strategy_analytics(_dart_load_sessions())
     import pytz as _pytz, datetime as _dt
 
@@ -2278,19 +2088,10 @@ def render_dart_page(period: str = "2y") -> None:
             n_miss  = sum(1 for c in candidates
                           if c.get("result") == "未中" and c["代號"] in sel_codes)
 
-            # ★ 系統命中（全部候選股）vs 你的命中（只算你選中的）
-            #   舊版只顯示「你選中的命中數」，沒選就是 0，
-            #   但下方卡片顯示的是全部候選 → 數字對不上
-            sys_settled = [c for c in candidates if c.get("result")]
-            sys_hit     = sum(1 for c in sys_settled if c["result"] == "命中")
-            sys_n       = len(sys_settled)
-
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("候選股", f"{total} 檔",
-                        delta=f"已結算 {sys_n}" if sys_n else "待結算")
-            col2.metric("🟢 系統命中", f"{sys_hit} / {sys_n}",
-                        delta=f"{sys_hit/sys_n*100:.0f}%" if sys_n else None)
-            col3.metric("🏅 你選中", f"{n_hit} / {n_sel}" if n_sel else "未標記",
+            col1.metric("候選股", f"{total} 檔")
+            col2.metric("你選中", f"{n_sel} 檔")
+            col3.metric("✅ 命中", f"{n_hit} 檔",
                         delta=f"{n_hit/n_sel*100:.0f}%" if n_sel else None)
             col4.metric("射出時間", shoot_time[11:16] if len(shoot_time) > 10 else "--")
 
@@ -2332,25 +2133,22 @@ def render_dart_page(period: str = "2y") -> None:
                 chg      = cand.get("漲跌%")
                 nc       = cand.get("次日收盤")
 
-                # ── 邊框顏色（加粗 + 左側色條，提高辨識度）──────
+                # 邊框顏色
                 if is_sel and result == "命中":
-                    border, bg, bw = "#ffd700", "#2a2000", "3px"   # 金：選中且命中
-                    tag = "🏅 你選中 · 命中"
+                    border = "#f0c040"   # 金色：你選中且命中
+                    bg     = "#1a1500"
                 elif is_sel and result == "未中":
-                    border, bg, bw = "#e74c3c", "#2a0800", "3px"   # 紅：選中未中
-                    tag = "🏅 你選中 · 未中"
+                    border = "#c0392b"   # 紅色：你選中但未中
+                    bg     = "#1a0000"
                 elif is_sel:
-                    border, bg, bw = "#ffd700", "#2a2000", "3px"   # 金：選中待結算
-                    tag = "🏅 你選中 · 待結算"
+                    border = "#f0c040"   # 金色：你選中待結算
+                    bg     = "#1a1500"
                 elif result == "命中":
-                    border, bg, bw = "#00e676", "#002914", "2px"   # 亮綠：系統命中
-                    tag = "🟢 命中"
-                elif result == "未中":
-                    border, bg, bw = "#ff5252", "#290000", "2px"   # 亮紅：系統未中
-                    tag = "🔴 未中"
+                    border = "#0a7c59"   # 綠色：候選命中（你沒選）
+                    bg     = "#001a0f"
                 else:
-                    border, bg, bw = "#37474f", "#0d1117", "1px"   # 灰：待結算
-                    tag = "⏳ 待結算"
+                    border = "#1e3a5f"   # 預設藍灰
+                    bg     = "#0d1117"
 
                 # 漲跌顏色和文字
                 if chg is not None:
@@ -2413,10 +2211,8 @@ def render_dart_page(period: str = "2y") -> None:
                 _row2 = "".join(x for x in _r2 if x)
 
                 card_html = f"""
-                <div style="background:{bg};border:{bw} solid {border};border-left:6px solid {border};
-                            border-radius:10px;padding:10px 12px;
-                            margin-bottom:10px;position:relative;
-                            box-shadow:0 0 8px {border}33;">
+                <div style="background:{bg};border:2px solid {border};border-radius:10px;
+                            padding:10px 12px;margin-bottom:8px;position:relative;">
                   <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
                       <span style="font-size:12px;font-weight:700;color:#e0e0e0;">
